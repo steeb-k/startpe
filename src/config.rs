@@ -30,6 +30,17 @@ pub struct Config {
     pub center_taskbar: bool,
     /// Path to a .bmp shown as the user picture on the start menu.
     pub user_picture: Option<String>,
+    /// When StartPE provides the desktop itself (wallpaper + real icon view):
+    /// 0 = auto (only if Explorer's desktop never appears — e.g. a PE whose
+    /// modern-shell packages are stripped), 1 = always, 2 = never.
+    pub own_desktop: u32,
+    /// Path to a .bmp used as the desktop wallpaper when StartPE owns the
+    /// desktop. Falls back to `HKCU\Control Panel\Desktop\WallPaper`, then to
+    /// a solid fill of `desktop_color`.
+    pub wallpaper: Option<String>,
+    /// Solid desktop background COLORREF (0x00BBGGRR) used when no wallpaper
+    /// bitmap is available.
+    pub desktop_color: u32,
 }
 
 impl Default for Config {
@@ -43,6 +54,9 @@ impl Default for Config {
             combine: true,
             center_taskbar: true,
             user_picture: None,
+            own_desktop: 0,
+            wallpaper: None,
+            desktop_color: 0x0030_2820,
         }
     }
 }
@@ -73,6 +87,17 @@ impl Config {
                 if !v.is_empty() {
                     cfg.user_picture = Some(v);
                 }
+            }
+            if let Ok(v) = key.get_value::<u32, _>("OwnDesktop") {
+                cfg.own_desktop = v;
+            }
+            if let Ok(v) = key.get_value::<String, _>("Wallpaper") {
+                if !v.is_empty() {
+                    cfg.wallpaper = Some(v);
+                }
+            }
+            if let Ok(v) = key.get_value::<u32, _>("DesktopColor") {
+                cfg.desktop_color = v;
             }
         }
         cfg.taskbar_height = cfg.taskbar_height.clamp(24, 120);

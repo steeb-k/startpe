@@ -143,15 +143,11 @@ pub extern "system" fn DllCanUnloadNow() -> HRESULT {
 #[cfg(target_arch = "x86_64")]
 const TASKBAR_INIT_BODY_RVA: usize = 0x000d8bdb;
 
-/// RVA of the `jz 0xD8BFC` (`0F 84 9E 01 00 00`) that branches to the taskbar
-/// fail-fast when the modern-taskbar sync bring-up (`call 0x87344`) returns
-/// false. NOPing these six bytes lets the function ignore that failure, run
-/// the rest of its work, and return normally -- so Explorer survives to build
-/// the desktop while StartPE supplies the visible taskbar.
+/// First bytes of the `tray.cpp` init function's prologue
+/// (`mov [rsp+8],rcx ; push rbp ; push rbx ...`), used to validate we found
+/// the right function before patching its entry.
 #[cfg(target_arch = "x86_64")]
-const TASKBAR_FAILFAST_JZ_RVA: usize = 0x000d8a58;
-#[cfg(target_arch = "x86_64")]
-const TASKBAR_FAILFAST_JZ_BYTES: [u8; 6] = [0x0F, 0x84, 0x9E, 0x01, 0x00, 0x00];
+const TASKBAR_INIT_PROLOGUE: [u8; 5] = [0x48, 0x89, 0x4C, 0x24, 0x08];
 
 /// RVA inside Explorer.exe of the __fastfail instruction that aborts shell
 /// init in this PE (from the WER "Application Error" fault offset). Used to
@@ -189,13 +185,14 @@ const EXPLORER_STRING_RVAS: [usize; 5] = [
     0x1F3A71,
 ];
 
-/// Neutralize Explorer's modern-taskbar fail-fast (StartAllBack-style). In
-/// `tray.cpp` the Win11 taskbar sync bring-up returns false in PE (its
-/// WinRT/AppX backing is absent) and a `jz` branches to a WIL FAIL_FAST. We
-/// NOP that one branch so the function ignores the failure, finishes its work
-/// (including the desktop setup that follows), and returns normally. StartPE
-/// supplies the visible taskbar; Explorer just needs to survive to build the
-/// desktop (wallpaper + icons).
+/// Keep Explorer alive past the `tray.cpp` modern-taskbar init that fail-fasts
+/// in PE. We make the whole init function return immediately (`xor eax,eax;
+/// ret`). This does NOT produce a working desktop -- Explorer's Win11 shell
+/// init hard-depends on the modern taskbar, so the desktop/icon view is never
+/// built either way -- but it stops the fail-fast restart loop so Explorer
+/// stays as a single stable process for file-browser windows while StartPE
+/// provides the taskbar/start menu. (A real desktop needs StartPE to own it;
+/// see ARCHITECTURE.md.)
 #[cfg(not(target_arch = "x86_64"))]
 unsafe fn try_patch_explorer_taskbar() {}
 
@@ -252,43 +249,56 @@ unsafe fn try_patch_explorer_taskbar() {
     // Record the original function bytes (for the log/record) before patching.
     dump_explorer_code();
 
-    // The patch target is the conditional jump into the fail-fast block, not
-    // the function entry: we want the function to keep running (it sets up the
-    // desktop after this point) and only skip the abort.
-    let jz_addr = base + TASKBAR_FAILFAST_JZ_RVA;
-    let mut cur = [0u8; 6];
+    // Patch the function ENTRY to return immediately (`xor eax,eax; ret`).
+    // Skipping only the fail-fast branch was proven insufficient: on this 24H2
+    // build, desktop (`Progman`/`SHELLDLL_DefView`) creation is gated behind a
+    // *successful* taskbar init, so merely not-aborting makes Explorer tear
+    // itself down and restart-loop. Returning at entry does NOT produce the
+    // desktop either, but it stops that destructive loop so Explorer stays a
+    // single stable process usable for file-browser windows. The real fix for
+    // the desktop is to register the modern taskbar's XAML CBS dependency
+    // packages *before* Explorer starts (see ARCHITECTURE.md) -- not a patch.
+    let entry = base + f_begin;
+    let mut cur = [0u8; 3];
     for (i, b) in cur.iter_mut().enumerate() {
-        *b = *((jz_addr + i) as *const u8);
+        *b = *((entry + i) as *const u8);
     }
 
-    const NOPS: [u8; 6] = [0x90; 6];
-    if cur == NOPS {
+    // `xor eax,eax ; ret`
+    const RET0: [u8; 3] = [0x31, 0xC0, 0xC3];
+    if cur == RET0 {
         append_log(&format!(
-            "[startpe_loader] tray.cpp fail-fast jz already NOPed at rva=0x{TASKBAR_FAILFAST_JZ_RVA:X} (func 0x{f_begin:X}-0x{f_end:X})\n"
+            "[startpe_loader] tray.cpp init already neutralized at entry rva=0x{f_begin:X} \
+             (func 0x{f_begin:X}-0x{f_end:X})\n"
         ));
         return;
     }
-    if cur != TASKBAR_FAILFAST_JZ_BYTES {
+    // Validate we found the right function via its known prologue before writing.
+    let mut prologue = [0u8; 5];
+    for (i, b) in prologue.iter_mut().enumerate() {
+        *b = *((entry + i) as *const u8);
+    }
+    if prologue != TASKBAR_INIT_PROLOGUE {
         append_log(&format!(
-            "[startpe_loader] patch skipped: unexpected bytes at jz rva=0x{TASKBAR_FAILFAST_JZ_RVA:X}: \
-             [{:02X} {:02X} {:02X} {:02X} {:02X} {:02X}]\n",
-            cur[0], cur[1], cur[2], cur[3], cur[4], cur[5]
+            "[startpe_loader] patch skipped: unexpected prologue at entry rva=0x{f_begin:X}: \
+             [{:02X} {:02X} {:02X} {:02X} {:02X}]\n",
+            prologue[0], prologue[1], prologue[2], prologue[3], prologue[4]
         ));
         return;
     }
 
     let mut old = PAGE_PROTECTION_FLAGS(0);
-    if VirtualProtect(jz_addr as *const c_void, 6, PAGE_EXECUTE_READWRITE, &mut old).is_err() {
+    if VirtualProtect(entry as *const c_void, 3, PAGE_EXECUTE_READWRITE, &mut old).is_err() {
         append_log("[startpe_loader] patch failed: VirtualProtect\n");
         return;
     }
-    core::ptr::copy_nonoverlapping(NOPS.as_ptr(), jz_addr as *mut u8, 6);
-    let _ = VirtualProtect(jz_addr as *const c_void, 6, old, &mut old);
-    let _ = FlushInstructionCache(GetCurrentProcess(), Some(jz_addr as *const c_void), 6);
+    core::ptr::copy_nonoverlapping(RET0.as_ptr(), entry as *mut u8, 3);
+    let _ = VirtualProtect(entry as *const c_void, 3, old, &mut old);
+    let _ = FlushInstructionCache(GetCurrentProcess(), Some(entry as *const c_void), 3);
 
     append_log(&format!(
-        "[startpe_loader] PATCHED tray.cpp fail-fast jz: rva=0x{TASKBAR_FAILFAST_JZ_RVA:X} \
-         (func 0x{f_begin:X}-0x{f_end:X}) 0F 84 9E 01 00 00 -> 90 x6\n"
+        "[startpe_loader] NEUTRALIZED tray.cpp init at entry rva=0x{f_begin:X} \
+         (func 0x{f_begin:X}-0x{f_end:X}) -> 31 C0 C3 (xor eax,eax; ret)\n"
     ));
 }
 
