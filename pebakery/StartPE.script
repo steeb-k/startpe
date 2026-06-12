@@ -17,7 +17,7 @@ Author=steeb-k
 Level=3
 Selected=True
 Mandatory=False
-Version=0.1.12.0
+Version=0.1.13.0
 Date=2026-06-12
 
 [Variables]
@@ -132,9 +132,18 @@ End
 // have a working Explorer desktop, or 2 to disable.
 RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","OwnDesktop",1
 
-// Optional wallpaper for the StartPE-owned desktop. Provide a .bmp next to this
-// script as Wallpaper.bmp; otherwise the desktop is a solid DesktopColor fill.
-If,ExistFile,"%ScriptDir%\Wallpaper.bmp",Begin
+// Optional wallpaper for the StartPE-owned desktop. Provide Wallpaper.png,
+// .jpg, or .bmp next to this script (loaded via GDI+, first match wins);
+// otherwise the desktop is a solid DesktopColor fill.
+If,ExistFile,"%ScriptDir%\Wallpaper.png",Begin
+  FileCopy,"%ScriptDir%\Wallpaper.png","%TargetPrograms%\%ProgramFolder%\Wallpaper.png"
+  RegWrite,HKLM,REG_SZ,"Tmp_Software\StartPE","Wallpaper","%PEPrograms%\%ProgramFolder%\Wallpaper.png"
+End
+Else,If,ExistFile,"%ScriptDir%\Wallpaper.jpg",Begin
+  FileCopy,"%ScriptDir%\Wallpaper.jpg","%TargetPrograms%\%ProgramFolder%\Wallpaper.jpg"
+  RegWrite,HKLM,REG_SZ,"Tmp_Software\StartPE","Wallpaper","%PEPrograms%\%ProgramFolder%\Wallpaper.jpg"
+End
+Else,If,ExistFile,"%ScriptDir%\Wallpaper.bmp",Begin
   FileCopy,"%ScriptDir%\Wallpaper.bmp","%TargetPrograms%\%ProgramFolder%\Wallpaper.bmp"
   RegWrite,HKLM,REG_SZ,"Tmp_Software\StartPE","Wallpaper","%PEPrograms%\%ProgramFolder%\Wallpaper.bmp"
 End

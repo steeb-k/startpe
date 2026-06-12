@@ -3,7 +3,7 @@ members = ["loader"]
 
 [package]
 name = "startpe"
-version = "0.1.12"
+version = "0.1.13"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Free, open-source taskbar and start menu for Windows PE environments"
@@ -22,6 +22,7 @@ features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_GdiPlus",
     "Win32_Storage_FileSystem",
     "Win32_Security",
     "Win32_System_Com",
