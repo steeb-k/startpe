@@ -443,12 +443,10 @@ fn pinned_view(m: &MenuState) -> bool {
     !m.pinned.is_empty() && !m.showing_all
 }
 
-/// Display label for a pinned program (its file name without extension).
+/// Display label for a pinned program: its version-info application name
+/// (e.g. "HWiNFO64"), falling back to the file stem.
 fn pin_display_name(path: &Path) -> String {
-    path.file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_string()
+    util::app_display_name(&path.to_string_lossy())
 }
 
 fn sort_items(m: &mut MenuState) {

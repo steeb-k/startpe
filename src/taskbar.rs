@@ -751,7 +751,7 @@ fn refresh_buttons(state: &mut State) {
                     None => ordered.push(TaskButton {
                         key: pin.clone(),
                         windows: Vec::new(),
-                        title: exe_stem(pin),
+                        title: util::app_display_name(pin),
                         icon: cached_exe_icon(&mut state.icon_cache, pin),
                         rect: RECT::default(),
                         pinned_exe: Some(pin.clone()),
@@ -796,16 +796,6 @@ fn refresh_buttons(state: &mut State) {
             };
         }
         state.buttons = buttons;
-    }
-}
-
-/// File name without directory or extension, used as a pinned-but-not-running
-/// button's label (e.g. `B:\Programs\7-Zip\7zFM.exe` -> `7zFM`).
-fn exe_stem(path: &str) -> String {
-    let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
-    match name.rfind('.') {
-        Some(dot) => name[..dot].to_string(),
-        None => name.to_string(),
     }
 }
 
