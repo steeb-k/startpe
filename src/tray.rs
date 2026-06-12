@@ -89,7 +89,7 @@ pub fn create(taskbar: HWND) -> Result<()> {
     unsafe {
         // Find Explorer's tray *before* creating ours so the search cannot
         // return our own window.
-        let explorer_tray = FindWindowW(w!("Shell_TrayWnd"), None).unwrap_or_default();
+        let explorer_tray = crate::taskbar::find_explorer_tray();
 
         let hinstance: HINSTANCE = GetModuleHandleW(None)?.into();
         let class = w!("Shell_TrayWnd");

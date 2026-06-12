@@ -35,6 +35,11 @@ bottom edge. Both are undone on clean exit.
 
 Everything is documented Win32. Nothing depends on a specific Windows build.
 
+At startup StartPE waits (up to 60 s) for Explorer's `Progman` desktop and
+`SHELLDLL_DefView` before hiding Explorer's taskbar, and only targets
+`Shell_TrayWnd` windows owned by `explorer.exe` so our own tray host is never
+ mistaken for Explorer's.
+
 ## Process model
 
 Single process, single UI thread, two top-level windows:
@@ -82,6 +87,13 @@ Current values (all `REG_DWORD`):
 | `TaskbarCombine` | 1       | 1 = one button per app (click cycles its windows)     |
 | `CenterTaskbar`  | 1       | 1 = center the start button + task button cluster     |
 | `UserPicture`    | —       | REG_SZ path to a square .bmp for the start menu avatar |
+
+Launch: the PEBakery script writes the Run key for classic logon flows and
+calls `AddAutoRun,PostShell` so winrx-creator/PhoenixPE images start StartPE
+from `WinRxCreator.au3` after Explorer is up (the Default-user Run key is not
+read when Explorer runs as SYSTEM). A future option is HKLM shell/COM
+registration so Explorer loads StartPE the way StartAllBack hooks in-process;
+that is not implemented yet.
 
 ## Roadmap to StartAllBack parity
 

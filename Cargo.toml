@@ -1,6 +1,6 @@
 [package]
 name = "startpe"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Free, open-source taskbar and start menu for Windows PE environments"
