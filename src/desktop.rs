@@ -19,14 +19,17 @@
 use core::ffi::c_void;
 use std::cell::RefCell;
 
-use windows::core::{w, Result};
+use windows::core::{implement, w, Result, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+use windows::Win32::System::Com::{CoInitializeEx, IStream, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Ole::{IOleWindow_Impl, OLEMENUGROUPWIDTHS};
+use windows::Win32::UI::Controls::TBBUTTON;
+use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    SHGetDesktopFolder, IShellView, FOLDERSETTINGS, FVM_ICON, FWF_DESKTOP, FWF_NOCLIENTEDGE,
-    FWF_NOSCROLL, SVUIA_ACTIVATE_NOFOCUS,
+    IShellBrowser, IShellBrowser_Impl, IShellView, SHGetDesktopFolder, FOLDERSETTINGS, FVM_ICON,
+    FWF_DESKTOP, FWF_NOCLIENTEDGE, FWF_NOSCROLL, SVUIA_ACTIVATE_NOFOCUS,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -41,6 +44,8 @@ struct DesktopState {
     bg_color: u32,
     /// The hosted shell view (kept alive for the process lifetime).
     _view: Option<IShellView>,
+    /// The browser we hand the view (kept alive for the process lifetime).
+    _browser: Option<IShellBrowser>,
     /// The `SHELLDLL_DefView` child window, resized to track the desktop.
     view_hwnd: HWND,
 }
@@ -128,12 +133,15 @@ unsafe fn create(cfg: &Config) -> Result<()> {
             wallpaper,
             bg_color: cfg.desktop_color,
             _view: None,
+            _browser: None,
             view_hwnd: HWND::default(),
         })
     });
 
     let hwnd = CreateWindowExW(
-        WINDOW_EX_STYLE(0),
+        // WS_EX_TOOLWINDOW keeps the desktop out of the taskbar / Alt-Tab so it
+        // never shows up as a "Desktop" task button.
+        WS_EX_TOOLWINDOW,
         class,
         w!("Desktop"),
         WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN,
@@ -186,9 +194,11 @@ unsafe fn host_shell_view(parent: HWND) {
         fFlags: (FWF_DESKTOP | FWF_NOCLIENTEDGE | FWF_NOSCROLL).0 as u32,
     };
 
-    // No previous view, no parent IShellBrowser: FWF_DESKTOP views render and
-    // handle their own activation/launch without a hosting browser.
-    let view_hwnd = match view.CreateViewWindow(None, &fs, None, &rc) {
+    // Hand the view a minimal host browser. The desktop `SHELLDLL_DefView`
+    // calls back into the browser (for its parent window, status text, etc.);
+    // without one it creates no icon list. A NULL browser left the view empty.
+    let browser: IShellBrowser = DesktopBrowser { hwnd: parent }.into();
+    let view_hwnd = match view.CreateViewWindow(None, &fs, &browser, &rc) {
         Ok(h) => h,
         Err(_) => return,
     };
@@ -199,8 +209,77 @@ unsafe fn host_shell_view(parent: HWND) {
         if let Some(d) = d {
             d.view_hwnd = view_hwnd;
             d._view = Some(view);
+            d._browser = Some(browser);
         }
     });
+}
+
+/// Minimal `IShellBrowser` host for the desktop's `SHELLDLL_DefView`. The view
+/// only really needs `GetWindow` (its parent); the rest are no-ops or
+/// not-implemented, which is all a non-navigating desktop host requires.
+#[implement(IShellBrowser)]
+struct DesktopBrowser {
+    hwnd: HWND,
+}
+
+#[allow(non_snake_case)]
+impl IOleWindow_Impl for DesktopBrowser_Impl {
+    fn GetWindow(&self) -> Result<HWND> {
+        Ok(self.hwnd)
+    }
+    fn ContextSensitiveHelp(&self, _fentermode: BOOL) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[allow(non_snake_case)]
+impl IShellBrowser_Impl for DesktopBrowser_Impl {
+    fn InsertMenusSB(&self, _hmenushared: HMENU, _lpmenuwidths: *mut OLEMENUGROUPWIDTHS) -> Result<()> {
+        Err(E_NOTIMPL.into())
+    }
+    fn SetMenuSB(&self, _hmenushared: HMENU, _holemenures: isize, _hwndactiveobject: HWND) -> Result<()> {
+        Err(E_NOTIMPL.into())
+    }
+    fn RemoveMenusSB(&self, _hmenushared: HMENU) -> Result<()> {
+        Err(E_NOTIMPL.into())
+    }
+    fn SetStatusTextSB(&self, _pszstatustext: &PCWSTR) -> Result<()> {
+        Ok(())
+    }
+    fn EnableModelessSB(&self, _fenable: BOOL) -> Result<()> {
+        Ok(())
+    }
+    fn TranslateAcceleratorSB(&self, _pmsg: *const MSG, _wid: u16) -> Result<()> {
+        Err(E_NOTIMPL.into())
+    }
+    fn BrowseObject(&self, _pidl: *const ITEMIDLIST, _wflags: u32) -> Result<()> {
+        Err(E_NOTIMPL.into())
+    }
+    fn GetViewStateStream(&self, _grfmode: u32) -> Result<IStream> {
+        Err(E_NOTIMPL.into())
+    }
+    fn GetControlWindow(&self, _id: u32) -> Result<HWND> {
+        Err(E_NOTIMPL.into())
+    }
+    fn SendControlMsg(
+        &self,
+        _id: u32,
+        _umsg: u32,
+        _wparam: WPARAM,
+        _lparam: LPARAM,
+        _pret: *mut LRESULT,
+    ) -> Result<()> {
+        Err(E_NOTIMPL.into())
+    }
+    fn QueryActiveShellView(&self) -> Result<IShellView> {
+        Err(E_NOTIMPL.into())
+    }
+    fn OnViewWindowActive(&self, _pshv: Option<&IShellView>) -> Result<()> {
+        Ok(())
+    }
+    fn SetToolbarItems(&self, _lpbuttons: *const TBBUTTON, _nbuttons: u32, _uflags: u32) -> Result<()> {
+        Err(E_NOTIMPL.into())
+    }
 }
 
 /// Resolve and load the wallpaper bitmap (BMP). Tries the configured path, then

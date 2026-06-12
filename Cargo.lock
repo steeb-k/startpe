@@ -28,15 +28,16 @@ dependencies = [
 
 [[package]]
 name = "startpe"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "windows",
+ "windows-core",
  "winreg",
 ]
 
 [[package]]
 name = "startpe_loader"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "windows",
 ]

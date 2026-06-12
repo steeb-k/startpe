@@ -73,11 +73,14 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
 
 ## Configuration contract for PEBakery
 
-All configuration is read once at startup from `HKCU\Software\StartPE`. In a
-PE image the build script writes these values into the mounted **Default
-user** hive (the same mechanism the StartAllBack script uses for
-`Software\StartIsBack`), so the menu is fully configured on first boot with
-no per-boot setup step.
+Configuration is read once at startup from `HKLM\Software\StartPE`, then
+overlaid by `HKCU\Software\StartPE` (so a per-user install can override). In a
+PE image the build script writes the values into the **SOFTWARE** hive
+(`HKLM\Software\StartPE`) offline — **not** the Default-user hive: PE runs the
+shell as `SYSTEM`, whose `HKCU` is the SYSTEM profile and never the offline
+Default-user hive, so `HKCU\Software\StartPE` would be empty at runtime. (This is
+the same reason the Default-user `Run` key isn't honored under SYSTEM.) Writing
+machine-wide makes the menu fully configured on first boot with no per-boot step.
 
 Current values (all `REG_DWORD`):
 
