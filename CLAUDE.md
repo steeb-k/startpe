@@ -14,11 +14,16 @@ updated when behavior or config values change.
 
 ## Hard constraints (do not violate)
 
-- **Documented Win32 APIs only.** No Explorer DLL injection, no undocumented
-  internals. That is the project's core differentiator from StartAllBack and
-  the reason it can survive Windows updates. (One pragmatic exception lives in
-  `tray.rs`: the `Shell_NotifyIcon` WM_COPYDATA wire format is de-facto
-  stable and used by every alternative shell.)
+- **Documented Win32 APIs only — in `startpe.exe`.** No undocumented internals
+ in the main binary. (One pragmatic exception lives in `tray.rs`: the
+ `Shell_NotifyIcon` WM_COPYDATA wire format is de-facto stable and used by
+ every alternative shell.)
+- **`loader/` is the sandboxed exception.** `startpe_loader.dll` is loaded into
+ `explorer.exe` (via a `Drive\shellex\FolderExtensions` COM registration) to
+ keep Explorer's shell thread alive past the Win11 taskbar init on PE sources
+ that would otherwise black-screen. This is the one place undocumented
+ Explorer-internals work is allowed; keep it confined to `loader/` and keep
+ `startpe.exe` clean so the main binary still survives Windows updates.
 - **Must work in plain WinPE**: no DWM composition (rounded corners use GDI
   window regions, peek falls back from thumbnails to rows), no .NET, possibly
   limited fonts (UI glyphs use Segoe MDL2 Assets — degrade gracefully if you
@@ -52,9 +57,9 @@ updated when behavior or config values change.
 ## Build & test
 
 ```
-cargo build                                             # dev
-cargo build --release                                   # x64 (~200 KB)
-cargo build --release --target aarch64-pc-windows-msvc  # ARM64
+cargo build --workspace                                 # dev (startpe.exe + startpe_loader.dll)
+cargo build --release --workspace                       # x64
+cargo build --release --workspace --target aarch64-pc-windows-msvc  # ARM64
 ```
 
 Builds must stay warning-free. There are no unit tests; verification is
