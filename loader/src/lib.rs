@@ -30,7 +30,7 @@ use windows::Win32::System::Diagnostics::Debug::{
     AddVectoredExceptionHandler, RtlCaptureStackBackTrace, EXCEPTION_POINTERS,
 };
 use windows::Win32::System::LibraryLoader::{
-    DisableThreadLibraryCalls, GetModuleFileNameW, GetModuleHandleExW,
+    DisableThreadLibraryCalls, GetModuleFileNameW, GetModuleHandleExW, GetModuleHandleW,
     GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN,
     GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 };
@@ -123,13 +123,69 @@ pub extern "system" fn DllCanUnloadNow() -> HRESULT {
     S_FALSE
 }
 
+/// RVA inside Explorer.exe of the __fastfail instruction that aborts shell
+/// init in this PE (from the WER "Application Error" fault offset). Used to
+/// dump the surrounding machine code so the suppression patch can be written.
+const EXPLORER_FAULT_RVA: usize = 0x000d8c14;
+/// IMAGE_FILE_HEADER.TimeDateStamp of the Explorer.exe build we captured the
+/// fault on (10.0.26100.7462). The dump records the live value so we can tell
+/// whether a different image is in play.
+const EXPLORER_TIMESTAMP: u32 = 0x2151_d11c;
+
 unsafe extern "system" fn worker(_param: *mut c_void) -> u32 {
     if IS_EXPLORER.load(Relaxed) {
         append_log("[startpe_loader] worker thread running in explorer.exe\n");
         launch_startpe();
+        dump_explorer_code();
         probe_shell_windows();
     }
     0
+}
+
+/// Dump the bytes of Explorer.exe around the fail-fast site to a dedicated
+/// file (overwritten each time, so the shell restart loop leaves exactly one
+/// clean copy). The PE timestamp and SizeOfImage are recorded so we can
+/// confirm the patch will target the right build.
+unsafe fn dump_explorer_code() {
+    let base = match GetModuleHandleW(PCWSTR::null()) {
+        Ok(h) => h.0 as usize,
+        Err(_) => return,
+    };
+    if base == 0 {
+        return;
+    }
+    let e_lfanew = *((base + 0x3C) as *const u32) as usize;
+    let timestamp = *((base + e_lfanew + 8) as *const u32);
+    // Optional header begins after Signature(4) + IMAGE_FILE_HEADER(20).
+    let opt = base + e_lfanew + 24;
+    let size_of_image = *((opt + 56) as *const u32) as usize;
+
+    const PRE: usize = 0x100;
+    const LEN: usize = 0x200;
+    if EXPLORER_FAULT_RVA + (LEN - PRE) >= size_of_image {
+        return;
+    }
+    let start_rva = EXPLORER_FAULT_RVA - PRE;
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "explorer base=0x{base:X} timestamp=0x{timestamp:08X} (expected 0x{EXPLORER_TIMESTAMP:08X}) \
+         sizeofimage=0x{size_of_image:X} fault_rva=0x{EXPLORER_FAULT_RVA:X}\n\
+         (fault instruction is at the byte labeled +0x{EXPLORER_FAULT_RVA:05X})\n"
+    ));
+    for i in 0..LEN {
+        if i % 16 == 0 {
+            out.push_str(&format!("\n+0x{:05X}:", start_rva + i));
+        }
+        let byte = *((base + start_rva + i) as *const u8);
+        out.push_str(&format!(" {byte:02X}"));
+    }
+    out.push('\n');
+
+    let _ = std::fs::write("X:\\explorer_code.txt", out.as_bytes());
+    append_log(&format!(
+        "[startpe_loader] wrote explorer_code.txt (base=0x{base:X} timestamp=0x{timestamp:08X})\n"
+    ));
 }
 
 /// Sample which shell windows exist over a few seconds. This tells us how far
