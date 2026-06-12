@@ -1,0 +1,118 @@
+[License]
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+//
+// StartPE PEBakery integration script.
+// Distributed under the GPL-3.0-or-later license, like StartPE itself.
+// Modeled on the PhoenixPE script structure (c) Jonathan Holmgren (Homes32, MIT)
+// so it can sit alongside existing PhoenixPE/winrx-creator scripts.
+//
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+[Main]
+Title=StartPE
+Description=A free, open source (GPLv3) taskbar and start menu for Windows PE. Drop-in alternative to StartAllBack/StartIsBack++.
+Author=
+Level=3
+Selected=True
+Mandatory=False
+Version=0.1.0.0
+Date=2026-06-11
+
+[Variables]
+%ProgramFolder%=StartPE
+%BinaryX64%=startpe.exe
+%BinaryA64%=startpe-arm64.exe
+// Point this at a published release build, e.g.
+// https://github.com/steeb-k/startpe/releases/latest/download/startpe.exe
+%DownloadURL%=
+
+[Process]
+Echo,"Configuring [ StartPE ] as the start menu..."
+
+RunFromRam
+
+// ---------------------------------------------------------------------------
+// Stage the binary. Prefer a locally provided copy next to the script;
+// fall back to downloading a release build.
+
+If,%SourceArch%,Equal,x64,Set,%BinaryName%,%BinaryX64%
+Else,If,%SourceArch%,Equal,ARM64,Set,%BinaryName%,%BinaryA64%
+Else,Halt,"StartPE ERROR: Unsupported processor architecture [%SourceArch%]."
+
+If,Not,ExistFile,"%ProgramsCache%\%ProgramFolder%\%BinaryName%",Run,%ScriptFile%,DownloadProgram
+FileCopy,"%ProgramsCache%\%ProgramFolder%\%BinaryName%","%TargetPrograms%\%ProgramFolder%\%BinaryName%"
+
+Run,%ScriptFile%,Config
+
+[#Config#]
+// ===============================================================================================================================
+// Name...........: Config
+// Description....: Configure StartPE and arrange for it to launch with the shell.
+// Remarks........: All values land in the Default user hive, mounted offline -
+//                  the same pattern the StartAllBack script uses.
+// ===============================================================================================================================
+[Config]
+Echo,"Configuring StartPE..."
+
+RegHiveLoad,Tmp_Default,%RegDefault%
+
+// Launch StartPE when Explorer (the shell) processes the Run key.
+// StartPE is single-instance, so an Explorer restart relaunching it is harmless.
+RegWrite,HKLM,REG_SZ,"Tmp_Default\Software\Microsoft\Windows\CurrentVersion\Run","StartPE","%PEPrograms%\%ProgramFolder%\%BinaryName%"
+
+// StartPE configuration (see docs/ARCHITECTURE.md for the value reference).
+RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","TaskbarHeight",%nb_TaskbarHeight%
+RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","ButtonMaxWidth",220
+RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","MenuWidth",340
+RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","MenuHeight",480
+// 0 = icon-only task buttons (default), 1 = show window titles
+RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","TaskbarLabels",0
+// 1 = combine windows of the same app into one button (default), 0 = one button per window
+RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","TaskbarCombine",1
+// 1 = center the start button + task buttons (default), 0 = left-aligned
+RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","CenterTaskbar",1
+
+// User picture shown on the start menu (circular). Provide a square .bmp
+// next to this script as UserPicture.bmp, or leave absent for the default
+// person silhouette.
+If,ExistFile,"%ScriptDir%\UserPicture.bmp",Begin
+  FileCopy,"%ScriptDir%\UserPicture.bmp","%TargetPrograms%\%ProgramFolder%\UserPicture.bmp"
+  RegWrite,HKLM,REG_SZ,"Tmp_Default\Software\StartPE","UserPicture","%PEPrograms%\%ProgramFolder%\UserPicture.bmp"
+End
+
+// Quiet down the Win11 taskbar Explorer would otherwise populate.
+// (StartPE hides the window itself; these just avoid wasted work at logon.)
+RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\Microsoft\Windows\CurrentVersion\Search","SearchboxTaskbarMode",0
+RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced","ShowTaskViewButton",0
+RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced","TaskbarMn",0
+
+RegHiveUnload,Tmp_Default
+
+[#DownloadProgram#]
+// ===============================================================================================================================
+// Name...........: DownloadProgram
+// Description....: Download a release build of StartPE.
+// ===============================================================================================================================
+[DownloadProgram]
+If,%DownloadURL%,Equal,"",Halt,"StartPE ERROR: No local copy of [%BinaryName%] found in [%ProgramsCache%\%ProgramFolder%] and no %DownloadURL% is configured. Build it with cargo and place it there, or set the download URL."
+Echo,"Downloading the latest version of %ScriptTitle%..."
+WebGet,%DownloadURL%,"%ProgramsCache%\%ProgramFolder%\%BinaryName%",NOERR
+If,Not,#r,Equal,200,Halt,"Download failed: The code returned was [#r]."
+
+[#ClearDownloadCache#]
+[ClearDownloadCache]
+DirDeleteEx,"%ProgramsCache%\%ProgramFolder%"
+
+[#SetDefaultOptions#]
+[SetDefaultOptions]
+WriteInterface,Value,%ScriptFile%,Interface,nb_TaskbarHeight,40
+
+[#ShowScriptInfo#]
+[ShowScriptInfo]
+Message,"StartPE is a free, open source (GPLv3) taskbar and start menu for Windows PE.#$x#$xhttps://github.com/steeb-k/startpe"
+
+[Interface]
+lbl_TaskbarHeight="Taskbar height (px):",1,1,16,126,110,18,8,Normal
+nb_TaskbarHeight=,1,2,130,120,40,22,40,24,120,1
+btn_PurgeCache=,1,8,479,5,25,25,ClearDownloadCache,Trash.ico,True,"__Remove all downloaded files."
+btn_ScriptInfo=,1,8,605,5,25,25,ShowScriptInfo,Help_16.png,True,"__Script Info"
