@@ -66,6 +66,7 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   folder navigation, footer actions (Run / Cmd / Reboot / Shutdown)
 - `src/config.rs` — registry-backed configuration (`HKCU\Software\StartPE`)
 - `src/util.rs` — UTF-16 helpers, LOWORD/HIWORD
+- `loader/src/lib.rs` — `startpe_loader.dll`, the Explorer-side shim (see below)
 
 ## Configuration contract for PEBakery
 
@@ -118,11 +119,35 @@ that is not implemented yet.
   `TaskbarLocation`, icon sizes, …) and map them onto StartPE settings so
   existing build scripts work with minimal changes.
 
+## Explorer loader shim (`loader/`)
+
+On Win11 PE sources (observed on `10.0.26200.7623`) Explorer's modern (XAML)
+taskbar init faults during shell startup and takes down the shell thread
+*before* the desktop (`Progman`/`SHELLDLL_DefView`) is created — so wallpaper
+and icons never appear and the old `Run`-key launch never fires. The build
+deliberately does not ship the modern taskbar's AppX/WinRT packages, which is
+why a third-party taskbar was always required (StartAllBack solved this by
+injecting a DLL that replaced the taskbar init in-process).
+
+`loader/` builds `startpe_loader.dll`, a small companion that PEBakery
+registers as a `Drive\shellex\FolderExtensions` COM handler (CLSID
+`{6F3D9B2A-…}`). shell32 CoCreates it early in Explorer startup, pulling the
+DLL into `explorer.exe`. The loader:
+
+1. launches `startpe.exe` (our taskbar/start menu) from its own directory
+   (exe name derived from the DLL name, so the arch pair stays matched), and
+2. records the shell crash's faulting module + stack to `X:\startpe_loader.log`
+   (WinPE has no Event Viewer) so the targeted suppression hook can be written.
+
+The active taskbar-suppression hook lives here once the crash signature is
+known. This DLL is the **one** component permitted to touch Explorer internals;
+everything in `startpe.exe` remains documented Win32.
+
 ## Why not …
 
-- **Explorer injection (StartAllBack's way):** undocumented, breaks per
-  Windows build, hostile to code review. Rejected by design.
-- **Full shell replacement (`Winlogon\Shell = startpe.exe`):** viable later
-  (and would make tray ownership trivial), but PE images built from PhoenixPE
-  already rely on Explorer-as-shell behaviors; keeping Explorer maximizes
-  drop-in compatibility.
+- **Full StartAllBack-style replacement:** reimplementing Explorer's taskbar
+  in-process is unbounded per-build maintenance. The loader instead only keeps
+  Explorer's shell thread alive; `startpe.exe` still draws the taskbar.
+- **Full shell replacement (`Winlogon\Shell = startpe.exe`):** would force us to
+  reimplement Explorer's desktop/file-manager. Keeping Explorer as the shell
+  preserves all of that unchanged.

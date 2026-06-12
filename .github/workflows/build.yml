@@ -16,33 +16,42 @@ jobs:
       matrix:
         include:
           - target: x86_64-pc-windows-msvc
-            asset: startpe.exe
+            exe_asset: startpe.exe
+            dll_asset: startpe_loader.dll
           - target: aarch64-pc-windows-msvc
-            asset: startpe-arm64.exe
+            exe_asset: startpe-arm64.exe
+            dll_asset: startpe_loader-arm64.dll
     steps:
       - uses: actions/checkout@v4
 
       - name: Install target
         run: rustup target add ${{ matrix.target }}
 
+      # Builds both the startpe.exe binary and the startpe_loader cdylib.
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --workspace --target ${{ matrix.target }}
 
       # Release assets keep the names the PEBakery script expects
-      # (startpe.exe / startpe-arm64.exe).
-      - name: Stage asset
+      # (startpe.exe / startpe-arm64.exe, startpe_loader.dll / startpe_loader-arm64.dll).
+      - name: Stage assets
         shell: pwsh
-        run: Copy-Item "target/${{ matrix.target }}/release/startpe.exe" "${{ matrix.asset }}"
+        run: |
+          Copy-Item "target/${{ matrix.target }}/release/startpe.exe" "${{ matrix.exe_asset }}"
+          Copy-Item "target/${{ matrix.target }}/release/startpe_loader.dll" "${{ matrix.dll_asset }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset }}
-          path: ${{ matrix.asset }}
+          name: ${{ matrix.target }}
+          path: |
+            ${{ matrix.exe_asset }}
+            ${{ matrix.dll_asset }}
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.asset }}
+          files: |
+            ${{ matrix.exe_asset }}
+            ${{ matrix.dll_asset }}
           generate_release_notes: true

@@ -17,13 +17,18 @@ Author=steeb-k
 Level=3
 Selected=True
 Mandatory=False
-Version=0.1.1.0
-Date=2026-06-11
+Version=0.1.2.0
+Date=2026-06-12
 
 [Variables]
 %ProgramFolder%=StartPE
 %BinaryX64%=startpe.exe
 %BinaryA64%=startpe-arm64.exe
+// Explorer-side loader DLL (injected via FolderExtensions) — arch-matched to the binary.
+%LoaderX64%=startpe_loader.dll
+%LoaderA64%=startpe_loader-arm64.dll
+// COM CLSID used to get the loader pulled into Explorer at shell startup.
+%LoaderCLSID%={6F3D9B2A-1C4E-4E7A-9B58-2E1D7C0A5F31}
 // Base URL for release builds; the arch-specific binary name is appended.
 %DownloadURL%=https://github.com/steeb-k/startpe/releases/latest/download/
 
@@ -38,12 +43,20 @@ If,%cb_AlwaysDownload%,Equal,True,DirDeleteEx,"%ProgramsCache%\%ProgramFolder%"
 // Stage the binary. Prefer a locally provided copy next to the script;
 // fall back to downloading a release build.
 
-If,%SourceArch%,Equal,x64,Set,%BinaryName%,%BinaryX64%
-Else,If,%SourceArch%,Equal,ARM64,Set,%BinaryName%,%BinaryA64%
+If,%SourceArch%,Equal,x64,Begin
+  Set,%BinaryName%,%BinaryX64%
+  Set,%LoaderName%,%LoaderX64%
+End
+Else,If,%SourceArch%,Equal,ARM64,Begin
+  Set,%BinaryName%,%BinaryA64%
+  Set,%LoaderName%,%LoaderA64%
+End
 Else,Halt,"StartPE ERROR: Unsupported processor architecture [%SourceArch%]."
 
 If,Not,ExistFile,"%ProgramsCache%\%ProgramFolder%\%BinaryName%",Run,%ScriptFile%,DownloadProgram
+If,Not,ExistFile,"%ProgramsCache%\%ProgramFolder%\%LoaderName%",Run,%ScriptFile%,DownloadProgram
 FileCopy,"%ProgramsCache%\%ProgramFolder%\%BinaryName%","%TargetPrograms%\%ProgramFolder%\%BinaryName%"
+FileCopy,"%ProgramsCache%\%ProgramFolder%\%LoaderName%","%TargetPrograms%\%ProgramFolder%\%LoaderName%"
 
 Run,%ScriptFile%,Config
 
@@ -58,14 +71,26 @@ Run,%ScriptFile%,Config
 Echo,"Configuring StartPE..."
 
 RegHiveLoad,Tmp_Default,%RegDefault%
+RegHiveLoad,Tmp_Software,%RegSoftware%
 
 // Run key: honored when Explorer loads a real user profile (classic PE logon).
 // StartPE is single-instance, so an Explorer restart relaunching it is harmless.
 RegWrite,HKLM,REG_SZ,"Tmp_Default\Software\Microsoft\Windows\CurrentVersion\Run","StartPE","%PEPrograms%\%ProgramFolder%\%BinaryName%"
 
+// Register the StartPE loader DLL as a Drive FolderExtensions COM handler —
+// the same load vector StartAllBack uses — so shell32 pulls it into
+// explorer.exe early in shell startup. The loader keeps Explorer's shell
+// thread alive past the Win11 taskbar init (so the desktop/wallpaper/icons
+// appear) and launches startpe.exe. See loader/.
+RegWrite,HKLM,REG_SZ,"Tmp_Software\Classes\CLSID\%LoaderCLSID%\InProcServer32","","%PEPrograms%\%ProgramFolder%\%LoaderName%"
+RegWrite,HKLM,REG_SZ,"Tmp_Software\Classes\CLSID\%LoaderCLSID%\InProcServer32","ThreadingModel","Apartment"
+RegWrite,HKLM,REG_SZ,"Tmp_Software\Classes\Drive\shellex\FolderExtensions\%LoaderCLSID%","","StartPE"
+RegWrite,HKLM,REG_DWORD,"Tmp_Software\Classes\Drive\shellex\FolderExtensions\%LoaderCLSID%","DriveMask",255
+
 // winrx-creator / PhoenixPE: WinRxCreator.au3 starts Explorer as SYSTEM; the
 // Default-user Run key is not processed on that path. PostShell matches HotSwap
-// and other apps that must run after the shell is up.
+// and other apps that must run after the shell is up. StartPE is
+// single-instance, so the loader launching it too is harmless.
 AddAutoRun,PostShell,NoWait,"StartPE","%PEPrograms%\%ProgramFolder%\%BinaryName%"
 
 // StartPE configuration (see docs/ARCHITECTURE.md for the value reference).
@@ -101,6 +126,7 @@ RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\Microsoft\Windows\CurrentVersion\E
 RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced","TaskbarMn",0
 
 RegHiveUnload,Tmp_Default
+RegHiveUnload,Tmp_Software
 
 [#DownloadProgram#]
 // ===============================================================================================================================
@@ -112,6 +138,8 @@ If,%DownloadURL%,Equal,"",Halt,"StartPE ERROR: No local copy of [%BinaryName%] f
 Echo,"Downloading the latest version of %ScriptTitle%..."
 WebGet,"%DownloadURL%%BinaryName%","%ProgramsCache%\%ProgramFolder%\%BinaryName%",NOERR
 If,Not,#r,Equal,200,Halt,"Download failed: The code returned was [#r]."
+WebGet,"%DownloadURL%%LoaderName%","%ProgramsCache%\%ProgramFolder%\%LoaderName%",NOERR
+If,Not,#r,Equal,200,Halt,"Download failed (loader): The code returned was [#r]."
 
 [#ClearDownloadCache#]
 [ClearDownloadCache]
