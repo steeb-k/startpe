@@ -16,7 +16,7 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
+    OpenProcess, QueryFullProcessImageNameW, Sleep, PROCESS_NAME_FORMAT,
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -153,6 +153,85 @@ impl Taskbar {
     }
 }
 
+/// Block until Explorer has created the desktop shell (Progman + icon view),
+/// or until `timeout_ms` elapses. winrx-creator starts StartPE in PostShell
+/// alongside a still-initializing Explorer; hiding the taskbar or creating
+/// our own `Shell_TrayWnd` too early can prevent wallpaper and desktop icons
+/// from appearing.
+pub fn wait_for_explorer_shell_ready(timeout_ms: u32) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms as u64);
+    while std::time::Instant::now() < deadline {
+        if explorer_shell_ready() {
+            return;
+        }
+        unsafe {
+            Sleep(100);
+        }
+    }
+}
+
+fn explorer_shell_ready() -> bool {
+    unsafe {
+        let Ok(progman) = FindWindowW(w!("Progman"), None) else {
+            return false;
+        };
+        if progman.is_invalid() || !is_explorer_window(progman) {
+            return false;
+        }
+        let Ok(defview) = FindWindowExW(progman, None, w!("SHELLDLL_DefView"), None) else {
+            return false;
+        };
+        !defview.is_invalid()
+    }
+}
+
+fn is_explorer_window(hwnd: HWND) -> bool {
+    window_exe(hwnd).is_some_and(|p| p.ends_with("\\explorer.exe"))
+}
+
+/// Explorer's primary `Shell_TrayWnd`, if any. Used to proxy tray traffic and
+/// to avoid confusing our own tray window with Explorer's.
+pub fn find_explorer_tray() -> HWND {
+    find_explorer_window_by_class(w!("Shell_TrayWnd")).unwrap_or(HWND::default())
+}
+
+fn find_explorer_window_by_class(class: PCWSTR) -> Option<HWND> {
+    unsafe {
+        let mut after = HWND::default();
+        loop {
+            let Ok(hwnd) = FindWindowExW(None, after, class, None) else {
+                break;
+            };
+            if hwnd.is_invalid() {
+                break;
+            }
+            after = hwnd;
+            if is_explorer_window(hwnd) {
+                return Some(hwnd);
+            }
+        }
+    }
+    None
+}
+
+fn for_each_explorer_window(class: PCWSTR, mut f: impl FnMut(HWND)) {
+    unsafe {
+        let mut after = HWND::default();
+        loop {
+            let Ok(hwnd) = FindWindowExW(None, after, class, None) else {
+                break;
+            };
+            if hwnd.is_invalid() {
+                break;
+            }
+            after = hwnd;
+            if is_explorer_window(hwnd) {
+                f(hwnd);
+            }
+        }
+    }
+}
+
 /// Put Explorer's taskbar into auto-hide. Hiding the window alone is not
 /// enough: its appbar *work-area reservation* stays behind, which pushes our
 /// appbar up and leaves a black strip where the old taskbar was. Auto-hide
@@ -174,25 +253,17 @@ fn set_explorer_taskbar_state(tray: HWND, autohide: bool) {
 /// startup and again from a watchdog timer in case Explorer restarts.
 pub fn hide_explorer_taskbar() {
     unsafe {
-        if let Ok(tray) = FindWindowW(w!("Shell_TrayWnd"), None) {
-            if !tray.is_invalid() && IsWindowVisible(tray).as_bool() {
+        for_each_explorer_window(w!("Shell_TrayWnd"), |tray| {
+            if IsWindowVisible(tray).as_bool() {
                 set_explorer_taskbar_state(tray, true);
                 let _ = ShowWindow(tray, SW_HIDE);
             }
-        }
-        // Secondary monitors.
-        let mut secondary = HWND::default();
-        loop {
-            match FindWindowExW(None, secondary, w!("Shell_SecondaryTrayWnd"), None) {
-                Ok(h) if !h.is_invalid() => {
-                    if IsWindowVisible(h).as_bool() {
-                        let _ = ShowWindow(h, SW_HIDE);
-                    }
-                    secondary = h;
-                }
-                _ => break,
+        });
+        for_each_explorer_window(w!("Shell_SecondaryTrayWnd"), |tray| {
+            if IsWindowVisible(tray).as_bool() {
+                let _ = ShowWindow(tray, SW_HIDE);
             }
-        }
+        });
     }
 }
 
@@ -200,12 +271,13 @@ pub fn hide_explorer_taskbar() {
 /// Windows machine leaves the desktop usable.
 pub fn show_explorer_taskbar() {
     unsafe {
-        if let Ok(tray) = FindWindowW(w!("Shell_TrayWnd"), None) {
-            if !tray.is_invalid() {
-                set_explorer_taskbar_state(tray, false);
-                let _ = ShowWindow(tray, SW_SHOW);
-            }
-        }
+        for_each_explorer_window(w!("Shell_TrayWnd"), |tray| {
+            set_explorer_taskbar_state(tray, false);
+            let _ = ShowWindow(tray, SW_SHOW);
+        });
+        for_each_explorer_window(w!("Shell_SecondaryTrayWnd"), |tray| {
+            let _ = ShowWindow(tray, SW_SHOW);
+        });
     }
 }
 

@@ -36,6 +36,7 @@ fn main() -> windows::core::Result<()> {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
         let cfg = config::Config::load();
+        taskbar::wait_for_explorer_shell_ready(60_000);
         taskbar::hide_explorer_taskbar();
         let taskbar = taskbar::Taskbar::create(&cfg)?;
         start_menu::create(&cfg, taskbar.hwnd)?;

@@ -17,7 +17,7 @@ Author=steeb-k
 Level=3
 Selected=True
 Mandatory=False
-Version=0.1.0.0
+Version=0.1.1.0
 Date=2026-06-11
 
 [Variables]
@@ -59,9 +59,14 @@ Echo,"Configuring StartPE..."
 
 RegHiveLoad,Tmp_Default,%RegDefault%
 
-// Launch StartPE when Explorer (the shell) processes the Run key.
+// Run key: honored when Explorer loads a real user profile (classic PE logon).
 // StartPE is single-instance, so an Explorer restart relaunching it is harmless.
 RegWrite,HKLM,REG_SZ,"Tmp_Default\Software\Microsoft\Windows\CurrentVersion\Run","StartPE","%PEPrograms%\%ProgramFolder%\%BinaryName%"
+
+// winrx-creator / PhoenixPE: WinRxCreator.au3 starts Explorer as SYSTEM; the
+// Default-user Run key is not processed on that path. PostShell matches HotSwap
+// and other apps that must run after the shell is up.
+AddAutoRun,PostShell,NoWait,"StartPE","%PEPrograms%\%ProgramFolder%\%BinaryName%"
 
 // StartPE configuration (see docs/ARCHITECTURE.md for the value reference).
 RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","TaskbarHeight",%nb_TaskbarHeight%
