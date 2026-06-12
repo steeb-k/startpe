@@ -17,7 +17,7 @@ Author=steeb-k
 Level=3
 Selected=True
 Mandatory=False
-Version=0.1.11.0
+Version=0.1.12.0
 Date=2026-06-12
 
 [Variables]
@@ -140,6 +140,11 @@ If,ExistFile,"%ScriptDir%\Wallpaper.bmp",Begin
 End
 // Solid desktop background when no wallpaper bitmap (COLORREF 0x00BBGGRR).
 RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","DesktopColor",3158560
+
+// Built-in desktop namespace icons (This PC, Home, Network, Control Panel,
+// Recycle Bin). 0 = hidden (default; only your real Desktop / Public Desktop
+// shortcuts show), 1 = show them.
+RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","ShowSystemDesktopIcons",0
 
 // Quiet down the Win11 taskbar Explorer would otherwise populate.
 // (StartPE hides the window itself; these just avoid wasted work at logon.)

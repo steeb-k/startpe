@@ -144,7 +144,10 @@ unsafe fn create(cfg: &Config) -> Result<()> {
         WS_EX_TOOLWINDOW,
         class,
         w!("Desktop"),
-        WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN,
+        // No WS_CLIPCHILDREN: the FWF_DESKTOP shell view's list is transparent,
+        // so the parent must paint the wallpaper *under* it. Clipping children
+        // would leave the icon area unpainted (black) instead of wallpaper.
+        WS_POPUP | WS_VISIBLE,
         0,
         0,
         sw,
@@ -167,8 +170,54 @@ unsafe fn create(cfg: &Config) -> Result<()> {
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
     );
 
+    // Both must be in place before the view is created so it honors them:
+    //  - hide the namespace junctions (This PC, Home, Network, …) unless asked,
+    //  - register the wallpaper so the desktop view can paint it natively.
+    configure_desktop_icons(cfg.show_system_desktop_icons);
+    if let Some(path) = resolve_wallpaper_path(cfg) {
+        set_system_wallpaper(&path);
+    }
+
     host_shell_view(hwnd);
     Ok(())
+}
+
+/// Hide (or show) the built-in desktop namespace icons (This PC, user's Home,
+/// Network, Control Panel, Recycle Bin, …) by writing the documented
+/// `HideDesktopIcons\NewStartPanel` values. StartPE hosts the desktop view
+/// in-process, so the view reads these from our own `HKCU`. Default: hidden, so
+/// only the user's real Desktop/Public-Desktop shortcuts show.
+fn configure_desktop_icons(show_system: bool) {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    const HIDE_KEY: &str =
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\HideDesktopIcons\\NewStartPanel";
+    // CLSIDs of the namespace junctions that appear on the desktop.
+    const CLSIDS: [&str; 6] = [
+        "{20D04FE0-3AEA-1069-A2D8-08002B30309D}", // This PC
+        "{59031a47-3f72-44a7-89c5-5595fe6b30ee}", // User's Files (Home)
+        "{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}", // Network
+        "{645FF040-5081-101B-9F08-00AA002F954E}", // Recycle Bin
+        "{5399E694-6CE5-4D6C-8FCE-1D8870FDCBA0}", // Control Panel
+        "{450D8FBA-AD25-11D0-98A8-0800361B1103}", // My Documents (legacy)
+    ];
+    let value: u32 = if show_system { 0 } else { 1 };
+    if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(HIDE_KEY) {
+        for clsid in CLSIDS {
+            let _ = key.set_value(clsid, &value);
+        }
+    }
+}
+
+/// Point the desktop wallpaper at `path` so the FWF_DESKTOP view paints it.
+unsafe fn set_system_wallpaper(path: &str) {
+    let wp = util::WideStr::new(path);
+    let _ = SystemParametersInfoW(
+        SPI_SETDESKWALLPAPER,
+        0,
+        Some(wp.pcwstr().0 as *mut c_void),
+        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+    );
 }
 
 /// Host the real shell desktop view (`SHELLDLL_DefView`) as a child filling the
@@ -287,7 +336,7 @@ impl IShellBrowser_Impl for DesktopBrowser_Impl {
 /// solid fill. (Only BMP is supported via `LoadImageW`; PE scripts that want a
 /// photo wallpaper should provide a .bmp, as the user-picture path already is.)
 unsafe fn load_wallpaper(cfg: &Config) -> Option<HBITMAP> {
-    let path = cfg.wallpaper.clone().or_else(control_panel_wallpaper)?;
+    let path = resolve_wallpaper_path(cfg)?;
     if !path.to_ascii_lowercase().ends_with(".bmp") {
         return None;
     }
@@ -295,6 +344,12 @@ unsafe fn load_wallpaper(cfg: &Config) -> Option<HBITMAP> {
     LoadImageW(None, wp.pcwstr(), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE)
         .ok()
         .map(|h| HBITMAP(h.0))
+}
+
+/// Resolve the wallpaper path: the configured value, else the per-user Control
+/// Panel wallpaper.
+fn resolve_wallpaper_path(cfg: &Config) -> Option<String> {
+    cfg.wallpaper.clone().or_else(control_panel_wallpaper)
 }
 
 fn control_panel_wallpaper() -> Option<String> {

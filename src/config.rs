@@ -41,6 +41,10 @@ pub struct Config {
     /// Solid desktop background COLORREF (0x00BBGGRR) used when no wallpaper
     /// bitmap is available.
     pub desktop_color: u32,
+    /// Show the built-in desktop namespace icons (This PC, Home, Network,
+    /// Control Panel, Recycle Bin). Default off, so only the user's real
+    /// Desktop / Public-Desktop shortcuts appear.
+    pub show_system_desktop_icons: bool,
 }
 
 impl Default for Config {
@@ -57,6 +61,7 @@ impl Default for Config {
             own_desktop: 0,
             wallpaper: None,
             desktop_color: 0x0030_2820,
+            show_system_desktop_icons: false,
         }
     }
 }
@@ -112,6 +117,9 @@ impl Config {
         }
         if let Ok(v) = key.get_value::<u32, _>("DesktopColor") {
             self.desktop_color = v;
+        }
+        if let Ok(v) = key.get_value::<u32, _>("ShowSystemDesktopIcons") {
+            self.show_system_desktop_icons = v != 0;
         }
     }
 }
