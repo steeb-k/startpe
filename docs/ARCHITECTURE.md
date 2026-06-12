@@ -67,6 +67,9 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   folder navigation, footer actions (Run / Cmd / Reboot / Shutdown)
 - `src/desktop.rs` — StartPE-owned desktop (wallpaper + hosted shell icon
   view), created only when Explorer's own desktop never appears
+- `src/pins.rs` — reads the winrx-creator/PhoenixPE `PinUtil.ini` staging file
+  (`%Windir%\System32\PinUtil.ini`, `[PinUtil]` `Taskbar<n>`/`StartMenu<n>` =
+  exe path) so StartPE can render pinned taskbar/start-menu items
 - `src/config.rs` — registry-backed configuration (`HKCU\Software\StartPE`)
 - `src/util.rs` — UTF-16 helpers, LOWORD/HIWORD
 - `loader/src/lib.rs` — `startpe_loader.dll`, the Explorer-side shim (see below)
@@ -117,7 +120,9 @@ that is not implemented yet.
   copy-data (appbar protocol) is proxied to Explorer's tray; NIM traffic is
   mirrored there too so Explorer stays consistent if StartPE exits.
   Remaining: tooltips, balloon notifications, overflow area.
-- **M2: taskbar parity.** Pinned items, button grouping/combining modes,
+- **M2: taskbar parity.** Pinned items (done — taskbar pins from `PinUtil.ini`
+  show even when not running and launch on click; see `src/pins.rs`), button
+  grouping/combining modes,
   labels on/off, taskbar on any screen edge, multi-monitor, auto-hide,
   jump-list-style context menus (close/restore/minimize).
 - **M3: start menu parity.** Search box (filter as you type over the indexed
