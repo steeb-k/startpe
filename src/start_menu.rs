@@ -53,6 +53,7 @@ const GLYPH_RUN: &str = "\u{E7AC}";
 const GLYPH_POWER: &str = "\u{E7E8}";
 const GLYPH_SEARCH: &str = "\u{E721}";
 const GLYPH_CHEVRON: &str = "\u{E76C}";
+const GLYPH_CHEVRON_LEFT: &str = "\u{E76B}";
 
 enum ItemKind {
     Back,
@@ -92,6 +93,11 @@ struct MenuState {
     height: i32, // total, including avatar overhang
     items: Vec<Item>,
     rights: Vec<RightItem>,
+    /// Start-menu pinned program paths (from PinUtil.ini), in pin order. When
+    /// non-empty the menu opens to these instead of the full app list.
+    pinned: Vec<PathBuf>,
+    /// True once the user switched from the pinned view to the full app list.
+    showing_all: bool,
     /// Folder navigation stack; empty means the merged top level.
     stack: Vec<PathBuf>,
     /// Live search query; non-empty switches the left pane to results.
@@ -151,6 +157,12 @@ pub fn create(cfg: &Config, taskbar: HWND) -> Result<()> {
                 height,
                 items: Vec::new(),
                 rights: build_right_items(),
+                pinned: crate::pins::Pins::load()
+                    .start_menu
+                    .into_iter()
+                    .map(PathBuf::from)
+                    .collect(),
+                showing_all: false,
                 stack: Vec::new(),
                 query: String::new(),
                 scroll: 0,
@@ -267,6 +279,7 @@ pub fn toggle() {
                 m.query.clear();
                 m.scroll = 0;
                 m.hover = Hit::None;
+                m.showing_all = false;
                 rebuild(m);
             });
             // Anchor above the taskbar with a gap, centered on the screen
@@ -403,6 +416,16 @@ fn rebuild(m: &mut MenuState) {
             }
         }
         sort_items(m);
+    } else if pinned_view(m) {
+        // Pinned view (default when start-menu pins exist): show the pins in
+        // pin order, no sorting, no folders.
+        for path in &m.pinned {
+            m.items.push(Item {
+                kind: ItemKind::Launch(path.clone()),
+                name: pin_display_name(path),
+                icon: None,
+            });
+        }
     } else {
         for root in start_menu_roots() {
             collect_dir(&root, &mut m.items);
@@ -412,6 +435,20 @@ fn rebuild(m: &mut MenuState) {
 
     load_icons(m);
     m.scroll = 0;
+}
+
+/// Whether the menu should currently show the pinned view (pins exist and the
+/// user hasn't switched to All apps).
+fn pinned_view(m: &MenuState) -> bool {
+    !m.pinned.is_empty() && !m.showing_all
+}
+
+/// Display label for a pinned program (its file name without extension).
+fn pin_display_name(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn sort_items(m: &mut MenuState) {
@@ -713,6 +750,15 @@ fn draw_left_pane(m: &MenuState, hdc: HDC) {
         if m.hover == Hit::AllPrograms {
             fill(hdc, &ap, COL_HOVER);
         }
+        // The row flips between "All apps ›" (in the pinned view) and
+        // "‹ Pinned" (in the full list, when pins exist).
+        let (glyph, label) = if pinned_view(m) {
+            (GLYPH_CHEVRON, "All apps")
+        } else if !m.pinned.is_empty() {
+            (GLYPH_CHEVRON_LEFT, "Pinned")
+        } else {
+            (GLYPH_CHEVRON, "All Programs")
+        };
         SelectObject(hdc, m.font_glyph);
         SetTextColor(hdc, COLORREF(COL_TEXT));
         let mut gr = RECT {
@@ -721,7 +767,7 @@ fn draw_left_pane(m: &MenuState, hdc: HDC) {
             right: scaled(36),
             bottom: ap.bottom,
         };
-        draw_str(hdc, GLYPH_CHEVRON, &mut gr, DT_SINGLELINE | DT_VCENTER);
+        draw_str(hdc, glyph, &mut gr, DT_SINGLELINE | DT_VCENTER);
         SelectObject(hdc, m.font);
         let mut tr = RECT {
             left: scaled(46),
@@ -729,7 +775,7 @@ fn draw_left_pane(m: &MenuState, hdc: HDC) {
             right: lp_right - scaled(8),
             bottom: ap.bottom,
         };
-        draw_str(hdc, "All Programs", &mut tr, DT_SINGLELINE | DT_VCENTER);
+        draw_str(hdc, label, &mut tr, DT_SINGLELINE | DT_VCENTER);
 
         // Vertical separator between panes.
         let vsep = RECT {
@@ -1106,6 +1152,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     Hit::AllPrograms => {
                         m.stack.clear();
                         m.query.clear();
+                        // With pins, this row toggles pinned <-> all apps;
+                        // without pins it just refreshes the full list.
+                        if !m.pinned.is_empty() {
+                            m.showing_all = !m.showing_all;
+                        }
                         rebuild(m);
                         Action::Navigate
                     }

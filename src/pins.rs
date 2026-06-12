@@ -10,8 +10,6 @@
 /// Pinned program paths, in pin-position order (lowest index first).
 pub struct Pins {
     pub taskbar: Vec<String>,
-    // Consumed by the start menu's pinned view (next milestone).
-    #[allow(dead_code)]
     pub start_menu: Vec<String>,
 }
 
@@ -42,11 +40,11 @@ impl Pins {
                 }
                 let key = key.trim().to_ascii_lowercase();
                 if let Some(idx) = key.strip_prefix("taskbar").and_then(|s| s.parse::<u32>().ok()) {
-                    taskbar.push((idx, val.to_string()));
+                    taskbar.push((idx, expand_env(val)));
                 } else if let Some(idx) =
                     key.strip_prefix("startmenu").and_then(|s| s.parse::<u32>().ok())
                 {
-                    start_menu.push((idx, val.to_string()));
+                    start_menu.push((idx, expand_env(val)));
                 }
             }
         }
@@ -57,6 +55,27 @@ impl Pins {
             taskbar: taskbar.into_iter().map(|(_, v)| v).collect(),
             start_menu: start_menu.into_iter().map(|(_, v)| v).collect(),
         }
+    }
+}
+
+/// Expand environment variables in a pin path (e.g. `%windir%\Explorer.exe`).
+/// PEBakery writes some pins with unexpanded vars.
+fn expand_env(s: &str) -> String {
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
+    let src: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        let needed = ExpandEnvironmentStringsW(PCWSTR(src.as_ptr()), None);
+        if needed == 0 {
+            return s.to_string();
+        }
+        let mut buf = vec![0u16; needed as usize];
+        let written = ExpandEnvironmentStringsW(PCWSTR(src.as_ptr()), Some(&mut buf));
+        if written == 0 {
+            return s.to_string();
+        }
+        // The count includes the NUL terminator.
+        String::from_utf16_lossy(&buf[..(written as usize).saturating_sub(1)])
     }
 }
 

@@ -125,9 +125,11 @@ that is not implemented yet.
   grouping/combining modes,
   labels on/off, taskbar on any screen edge, multi-monitor, auto-hide,
   jump-list-style context menus (close/restore/minimize).
-- **M3: start menu parity.** Search box (filter as you type over the indexed
-  shortcut list), right-pane links (Computer, Control Panel, Downloads, Run),
-  user picture, recent/frequent programs list, keyboard navigation.
+- **M3: start menu parity.** Pinned view (done — opens to the `PinUtil.ini`
+  `StartMenu` pins with an All apps / Pinned toggle), search box (filter as you
+  type over the indexed shortcut list), right-pane links (Computer, Control
+  Panel, Downloads, Run), user picture, recent/frequent programs list, keyboard
+  navigation.
 - **M4: theming + StartIsBack config compatibility.** Win7/Win10/Win11 visual
   styles, orb bitmaps, transparency; read the `Software\StartIsBack` values
   the existing PEBakery scripts already write (`Start_ShowRun`,
