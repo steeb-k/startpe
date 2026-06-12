@@ -150,6 +150,13 @@ const TASKBAR_INIT_BODY_RVA: usize = 0x000d8bdb;
 /// init in this PE (from the WER "Application Error" fault offset). Used to
 /// dump the surrounding machine code so the suppression patch can be written.
 const EXPLORER_FAULT_RVA: usize = 0x000d8c14;
+
+/// Window of Explorer.exe to dump: the whole `tray.cpp` init function. Its
+/// entry is at RVA 0xD8924 and it ends ~0xD8C15; we start a little before and
+/// run past the end so the full function (prologue, body, funclets) is
+/// captured for disassembly. Dumped from original memory before the patch.
+const DUMP_START_RVA: usize = 0x000d88f4;
+const DUMP_LEN: usize = 0x360;
 /// IMAGE_FILE_HEADER.TimeDateStamp of the Explorer.exe build we captured the
 /// fault on (10.0.26100.7462). The dump records the live value so we can tell
 /// whether a different image is in play.
@@ -159,7 +166,6 @@ unsafe extern "system" fn worker(_param: *mut c_void) -> u32 {
     if IS_EXPLORER.load(Relaxed) {
         append_log("[startpe_loader] worker thread running in explorer.exe\n");
         launch_startpe();
-        dump_explorer_code();
         probe_shell_windows();
     }
     0
@@ -249,6 +255,9 @@ unsafe fn try_patch_explorer_taskbar() {
         return;
     }
 
+    // Capture the full original function for disassembly before we modify it.
+    dump_explorer_code();
+
     let mut old = PAGE_PROTECTION_FLAGS(0);
     if VirtualProtect(addr as *const c_void, 3, PAGE_EXECUTE_READWRITE, &mut old).is_err() {
         append_log("[startpe_loader] patch failed: VirtualProtect\n");
@@ -292,15 +301,12 @@ unsafe fn dump_explorer_code() {
          (fault instruction is at the byte labeled +0x{EXPLORER_FAULT_RVA:05X})\n"
     ));
 
-    const PRE: usize = 0x100;
-    const LEN: usize = 0x200;
-    if EXPLORER_FAULT_RVA >= PRE && EXPLORER_FAULT_RVA + (LEN - PRE) < size_of_image {
-        let start_rva = EXPLORER_FAULT_RVA - PRE;
-        for i in 0..LEN {
+    if DUMP_START_RVA + DUMP_LEN < size_of_image {
+        for i in 0..DUMP_LEN {
             if i % 16 == 0 {
-                out.push_str(&format!("\n+0x{:05X}:", start_rva + i));
+                out.push_str(&format!("\n+0x{:05X}:", DUMP_START_RVA + i));
             }
-            let byte = *((base + start_rva + i) as *const u8);
+            let byte = *((base + DUMP_START_RVA + i) as *const u8);
             out.push_str(&format!(" {byte:02X}"));
         }
         out.push('\n');
