@@ -142,10 +142,22 @@ unsafe extern "system" fn worker(_param: *mut c_void) -> u32 {
     0
 }
 
-/// Dump the bytes of Explorer.exe around the fail-fast site to a dedicated
-/// file (overwritten each time, so the shell restart loop leaves exactly one
-/// clean copy). The PE timestamp and SizeOfImage are recorded so we can
-/// confirm the patch will target the right build.
+/// RVAs of the static operands referenced just before / at the fail-fast,
+/// recovered by hand-disassembling the dump. These are almost certainly the
+/// strings (registry paths / feature names / WIL source+expression) that name
+/// what Explorer fails to find in PE. Dumping them is what lets us fix the
+/// root cause at build time instead of patching code.
+const EXPLORER_STRING_RVAS: [usize; 5] = [
+    0x1EBFA0, // r8 at the fail-fast call (WIL message/context)
+    0x248439, 0x249AF1, 0x248489, // body lea rcx targets (lookups preceding the failure)
+    0x1F3A71,
+];
+
+/// Dump the bytes of Explorer.exe around the fail-fast site plus the static
+/// strings it references, to a dedicated file (overwritten each time, so the
+/// shell restart loop leaves exactly one clean copy). The PE timestamp and
+/// SizeOfImage are recorded so we can confirm the patch will target the right
+/// build.
 unsafe fn dump_explorer_code() {
     let base = match GetModuleHandleW(PCWSTR::null()) {
         Ok(h) => h.0 as usize,
@@ -160,27 +172,56 @@ unsafe fn dump_explorer_code() {
     let opt = base + e_lfanew + 24;
     let size_of_image = *((opt + 56) as *const u32) as usize;
 
-    const PRE: usize = 0x100;
-    const LEN: usize = 0x200;
-    if EXPLORER_FAULT_RVA + (LEN - PRE) >= size_of_image {
-        return;
-    }
-    let start_rva = EXPLORER_FAULT_RVA - PRE;
-
     let mut out = String::new();
     out.push_str(&format!(
         "explorer base=0x{base:X} timestamp=0x{timestamp:08X} (expected 0x{EXPLORER_TIMESTAMP:08X}) \
          sizeofimage=0x{size_of_image:X} fault_rva=0x{EXPLORER_FAULT_RVA:X}\n\
          (fault instruction is at the byte labeled +0x{EXPLORER_FAULT_RVA:05X})\n"
     ));
-    for i in 0..LEN {
-        if i % 16 == 0 {
-            out.push_str(&format!("\n+0x{:05X}:", start_rva + i));
+
+    const PRE: usize = 0x100;
+    const LEN: usize = 0x200;
+    if EXPLORER_FAULT_RVA >= PRE && EXPLORER_FAULT_RVA + (LEN - PRE) < size_of_image {
+        let start_rva = EXPLORER_FAULT_RVA - PRE;
+        for i in 0..LEN {
+            if i % 16 == 0 {
+                out.push_str(&format!("\n+0x{:05X}:", start_rva + i));
+            }
+            let byte = *((base + start_rva + i) as *const u8);
+            out.push_str(&format!(" {byte:02X}"));
         }
-        let byte = *((base + start_rva + i) as *const u8);
-        out.push_str(&format!(" {byte:02X}"));
+        out.push('\n');
     }
-    out.push('\n');
+
+    // Dump each referenced static operand both as UTF-16 text and as raw bytes
+    // (in case it is a struct/pointer rather than a string).
+    for rva in EXPLORER_STRING_RVAS {
+        out.push_str(&format!("\n--- @0x{rva:X} ---\n"));
+        if rva + 0x100 >= size_of_image {
+            out.push_str("  <out of image>\n");
+            continue;
+        }
+        // UTF-16 interpretation, stopping at a null terminator.
+        let wptr = (base + rva) as *const u16;
+        let mut wchars = Vec::new();
+        for i in 0..128 {
+            let c = *wptr.add(i);
+            if c == 0 {
+                break;
+            }
+            wchars.push(c);
+        }
+        out.push_str(&format!("  utf16: \"{}\"\n", String::from_utf16_lossy(&wchars)));
+        // Raw bytes for the first 0x60 bytes.
+        out.push_str("  bytes:");
+        for i in 0..0x60usize {
+            if i % 16 == 0 {
+                out.push_str(&format!("\n   +0x{i:02X}:"));
+            }
+            out.push_str(&format!(" {:02X}", *((base + rva + i) as *const u8)));
+        }
+        out.push('\n');
+    }
 
     let _ = std::fs::write("X:\\explorer_code.txt", out.as_bytes());
     append_log(&format!(
