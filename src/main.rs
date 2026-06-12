@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! StartPE — a free, open-source taskbar + start menu for Windows PE.
 //!
-//! Runs alongside Explorer-as-shell: Explorer keeps providing the desktop and
-//! file management while this process hides Explorer's Win11 taskbar and
-//! draws its own taskbar and start menu. See docs/ARCHITECTURE.md.
+//! Draws its own taskbar and start menu, and hides Explorer's Win11 taskbar.
+//! Explorer keeps providing the file manager (folder windows, copy/paste,
+//! context menus). When Explorer can't bring up its own desktop — a 24H2/25H2
+//! PE whose modern-shell packages are stripped, so its taskbar init fail-fasts
+//! and `Progman` is never created — StartPE provides the desktop too (wallpaper
+//! + hosted `SHELLDLL_DefView`); see `desktop.rs`. See docs/ARCHITECTURE.md.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod config;
+mod desktop;
 mod peek;
 mod start_menu;
 mod taskbar;
@@ -36,7 +40,17 @@ fn main() -> windows::core::Result<()> {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
         let cfg = config::Config::load();
-        taskbar::wait_for_explorer_shell_ready(60_000);
+
+        // If Explorer can't bring up its own desktop (a PE whose modern-shell
+        // packages are stripped, so its taskbar init fail-fasts), StartPE
+        // provides the desktop itself — wallpaper + the real shell icon view.
+        // On a normal box / working PE this detects Explorer's desktop and
+        // defers to it. `create_if_needed` already waited for Explorer in auto
+        // mode, so only wait again here when Explorer still owns the desktop.
+        let own_desktop = desktop::create_if_needed(&cfg);
+        if !own_desktop {
+            taskbar::wait_for_explorer_shell_ready(60_000);
+        }
         taskbar::hide_explorer_taskbar();
         let taskbar = taskbar::Taskbar::create(&cfg)?;
         start_menu::create(&cfg, taskbar.hwnd)?;

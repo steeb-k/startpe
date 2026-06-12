@@ -48,6 +48,7 @@ Single process, single UI thread, two top-level windows:
 | ----------------- | ----------------------------------------------- |
 | `StartPE_Taskbar` | appbar; start button, task buttons, clock       |
 | `StartPE_Menu`    | popup start menu; hidden until toggled          |
+| `StartPE_Desktop` | desktop window (wallpaper + hosted `SHELLDLL_DefView`); created only when Explorer's own desktop is absent |
 
 Per-window state lives in `thread_local!` `RefCell`s. The rule for window
 procedures: *resolve* an action while holding the borrow, *perform* it after
@@ -64,6 +65,8 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   Explorer-taskbar suppression
 - `src/start_menu.rs` — start menu popup, Start Menu folder enumeration,
   folder navigation, footer actions (Run / Cmd / Reboot / Shutdown)
+- `src/desktop.rs` — StartPE-owned desktop (wallpaper + hosted shell icon
+  view), created only when Explorer's own desktop never appears
 - `src/config.rs` — registry-backed configuration (`HKCU\Software\StartPE`)
 - `src/util.rs` — UTF-16 helpers, LOWORD/HIWORD
 - `loader/src/lib.rs` — `startpe_loader.dll`, the Explorer-side shim (see below)
@@ -88,6 +91,9 @@ Current values (all `REG_DWORD`):
 | `TaskbarCombine` | 1       | 1 = one button per app (click cycles its windows)     |
 | `CenterTaskbar`  | 1       | 1 = center the start button + task button cluster     |
 | `UserPicture`    | —       | REG_SZ path to a square .bmp for the start menu avatar |
+| `OwnDesktop`     | 0       | StartPE provides the desktop itself: 0 = auto (only if Explorer's desktop never appears), 1 = always, 2 = never |
+| `Wallpaper`      | —       | REG_SZ path to a .bmp wallpaper used when StartPE owns the desktop (falls back to `Control Panel\Desktop\WallPaper`, then a solid fill) |
+| `DesktopColor`   | 3158560 | solid desktop background COLORREF (0x00BBGGRR) when no wallpaper bitmap is available (default 0x00302820) |
 
 Launch: the PEBakery script writes the Run key for classic logon flows and
 calls `AddAutoRun,PostShell` so winrx-creator/PhoenixPE images start StartPE
@@ -119,15 +125,44 @@ that is not implemented yet.
   `TaskbarLocation`, icon sizes, …) and map them onto StartPE settings so
   existing build scripts work with minimal changes.
 
-## Explorer loader shim (`loader/`)
+## The Win11 24H2/25H2 PE desktop problem (and why StartPE owns the desktop)
 
-On Win11 PE sources (observed on `10.0.26200.7623`) Explorer's modern (XAML)
-taskbar init faults during shell startup and takes down the shell thread
-*before* the desktop (`Progman`/`SHELLDLL_DefView`) is created — so wallpaper
-and icons never appear and the old `Run`-key launch never fires. The build
-deliberately does not ship the modern taskbar's AppX/WinRT packages, which is
-why a third-party taskbar was always required (StartAllBack solved this by
-injecting a DLL that replaced the taskbar init in-process).
+On Win11 24H2/25H2 PE sources (observed on `10.0.26100`/`26200`) Explorer's
+modern (XAML) taskbar init fail-fasts during shell startup — a WIL `FAIL_FAST`
+in `taskbar.cpp` (`taskbarInitTiPReason::sync_thread_created`) — and takes down
+the shell thread *before* the desktop (`Progman`/`SHELLDLL_DefView`) is created,
+so wallpaper and icons never appear. This is the documented Win11 XAML-package
+failure: the modern taskbar depends on the `MicrosoftWindows.Client.CBS`,
+`Microsoft.UI.Xaml.CBS`, and `MicrosoftWindows.Client.Core` packages being
+registered before Explorer starts. PE images strip those packages entirely
+(no `SystemApps`/`WindowsApps`), and PE has no working AppX registration stack
+(the `Appx` PowerShell module won't even load), so they cannot be registered.
+
+Two consequences fix the design:
+
+1. **Patching Explorer can't produce a desktop.** On 24H2 the desktop is built
+   only if the taskbar init *succeeds*; merely skipping the fail-fast (tried
+   both as return-at-entry and NOP-the-branch in `loader/`) leaves Explorer with
+   no valid taskbar object, so it tears itself down before creating `Progman` —
+   or restart-loops. StartAllBack gets a desktop because it injects a complete
+   Win32 *replacement* taskbar so Explorer's init genuinely completes; that is
+   unbounded per-build maintenance we won't take on.
+2. **So StartPE provides the desktop itself** (`src/desktop.rs`) when Explorer's
+   never appears: it creates a `Progman`-style window at the bottom of the
+   z-order, paints the wallpaper, and hosts the *real* shell desktop view
+   (`SHELLDLL_DefView`, via `IShellFolder::CreateViewObject`/`IShellView` — plain
+   shell32, which works in PE). Desktop icons, the right-click menu, and
+   double-click-opens-a-folder behave exactly as users expect. Explorer is still
+   launched on demand as the file manager; it just no longer has to be the shell.
+   On a normal box (or a PE where Explorer's desktop does come up) StartPE detects
+   it and stays out of the way. Behavior is `OwnDesktop` (0 auto / 1 always /
+   2 never).
+
+### Explorer loader shim (`loader/`)
+
+The build deliberately does not ship the modern taskbar's AppX/WinRT packages,
+which is why a third-party taskbar was always required (StartAllBack solved this
+by injecting a DLL that replaced the taskbar init in-process).
 
 `loader/` builds `startpe_loader.dll`, a small companion that PEBakery
 registers as a `Drive\shellex\FolderExtensions` COM handler (CLSID
@@ -148,6 +183,10 @@ everything in `startpe.exe` remains documented Win32.
 - **Full StartAllBack-style replacement:** reimplementing Explorer's taskbar
   in-process is unbounded per-build maintenance. The loader instead only keeps
   Explorer's shell thread alive; `startpe.exe` still draws the taskbar.
-- **Full shell replacement (`Winlogon\Shell = startpe.exe`):** would force us to
-  reimplement Explorer's desktop/file-manager. Keeping Explorer as the shell
-  preserves all of that unchanged.
+- **Full shell replacement (`Winlogon\Shell = startpe.exe`):** we don't
+  reimplement Explorer's *file manager* — Explorer is still launched on demand
+  for folder windows, copy/paste, and context-menu handlers (all shell32, all
+  working in PE). StartPE only supplies the *shell surface* Explorer can't bring
+  up on a stripped 24H2/25H2 PE: taskbar, start menu, and (via `src/desktop.rs`)
+  the desktop. The desktop icon view is the same `SHELLDLL_DefView` control
+  Explorer hosts, so it is the real desktop, not a reimplementation.

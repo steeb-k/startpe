@@ -17,7 +17,7 @@ Author=steeb-k
 Level=3
 Selected=True
 Mandatory=False
-Version=0.1.9.0
+Version=0.1.10.0
 Date=2026-06-12
 
 [Variables]
@@ -118,6 +118,22 @@ If,ExistFile,"%ScriptDir%\UserPicture.bmp",Begin
   FileCopy,"%ScriptDir%\UserPicture.bmp","%TargetPrograms%\%ProgramFolder%\UserPicture.bmp"
   RegWrite,HKLM,REG_SZ,"Tmp_Default\Software\StartPE","UserPicture","%PEPrograms%\%ProgramFolder%\UserPicture.bmp"
 End
+
+// Desktop: on Win11 24H2/25H2 PE, Explorer's modern taskbar init fail-fasts and
+// Explorer never builds its own desktop (no Progman -> no wallpaper/icons), so
+// StartPE provides the desktop itself. 1 = always own the desktop (skips the
+// detection wait; correct for these PE images). Use 0 (auto) only if some boots
+// have a working Explorer desktop, or 2 to disable.
+RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","OwnDesktop",1
+
+// Optional wallpaper for the StartPE-owned desktop. Provide a .bmp next to this
+// script as Wallpaper.bmp; otherwise the desktop is a solid DesktopColor fill.
+If,ExistFile,"%ScriptDir%\Wallpaper.bmp",Begin
+  FileCopy,"%ScriptDir%\Wallpaper.bmp","%TargetPrograms%\%ProgramFolder%\Wallpaper.bmp"
+  RegWrite,HKLM,REG_SZ,"Tmp_Default\Software\StartPE","Wallpaper","%PEPrograms%\%ProgramFolder%\Wallpaper.bmp"
+End
+// Solid desktop background when no wallpaper bitmap (COLORREF 0x00BBGGRR).
+RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","DesktopColor",3158560
 
 // Quiet down the Win11 taskbar Explorer would otherwise populate.
 // (StartPE hides the window itself; these just avoid wasted work at logon.)
