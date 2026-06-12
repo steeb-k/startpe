@@ -65,6 +65,9 @@ struct TaskButton {
     title: String,
     icon: Option<HICON>,
     rect: RECT,
+    /// For a pinned app: the exe to launch when the button has no open windows.
+    /// `None` for ordinary (unpinned) running-window buttons.
+    pinned_exe: Option<String>,
 }
 
 struct State {
@@ -76,6 +79,9 @@ struct State {
     font: HFONT,
     font_small: HFONT,
     buttons: Vec<TaskButton>,
+    /// Pinned taskbar app exe paths (from PinUtil.ini), in pin order. Shown as
+    /// buttons even when not running; clicking a not-running pin launches it.
+    pinned: Vec<String>,
     /// Snapshot of visible tray icons (drawn left of the clock).
     tray_icons: Vec<HICON>,
     /// Icons extracted from exe files (UWP fallback), keyed by exe path.
@@ -125,6 +131,7 @@ impl Taskbar {
                     font,
                     font_small,
                     buttons: Vec::new(),
+                    pinned: crate::pins::Pins::load().taskbar,
                     tray_icons: Vec::new(),
                     icon_cache: HashMap::new(),
                     hover: Hit::None,
@@ -707,6 +714,7 @@ fn refresh_buttons(state: &mut State) {
                     title: window_title(hwnd),
                     icon,
                     rect: RECT::default(),
+                    pinned_exe: None,
                 });
             }
         }
@@ -721,6 +729,38 @@ fn refresh_buttons(state: &mut State) {
             }
         }
         buttons.extend(fresh);
+
+        // Pinned apps come first, in pin order: a running app adopts its pinned
+        // slot (so it doesn't also appear later), and a pin with no open window
+        // becomes a launch button. Unpinned running buttons follow, in their
+        // existing stable order.
+        if !state.pinned.is_empty() {
+            let pins = state.pinned.clone();
+            let mut slots: Vec<Option<TaskButton>> = buttons.into_iter().map(Some).collect();
+            let mut ordered: Vec<TaskButton> = Vec::with_capacity(slots.len() + pins.len());
+            for pin in &pins {
+                let hit = slots.iter().position(|b| {
+                    b.as_ref().is_some_and(|b| b.key.eq_ignore_ascii_case(pin))
+                });
+                match hit {
+                    Some(pos) => {
+                        let mut b = slots[pos].take().unwrap();
+                        b.pinned_exe = Some(pin.clone());
+                        ordered.push(b);
+                    }
+                    None => ordered.push(TaskButton {
+                        key: pin.clone(),
+                        windows: Vec::new(),
+                        title: exe_stem(pin),
+                        icon: cached_exe_icon(&mut state.icon_cache, pin),
+                        rect: RECT::default(),
+                        pinned_exe: Some(pin.clone()),
+                    }),
+                }
+            }
+            ordered.extend(slots.into_iter().flatten());
+            buttons = ordered;
+        }
 
         let (width, height) = client_size(state.hwnd);
         state.tray_icons = crate::tray::snapshot();
@@ -756,6 +796,31 @@ fn refresh_buttons(state: &mut State) {
             };
         }
         state.buttons = buttons;
+    }
+}
+
+/// File name without directory or extension, used as a pinned-but-not-running
+/// button's label (e.g. `B:\Programs\7-Zip\7zFM.exe` -> `7zFM`).
+fn exe_stem(path: &str) -> String {
+    let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
+    match name.rfind('.') {
+        Some(dot) => name[..dot].to_string(),
+        None => name.to_string(),
+    }
+}
+
+/// Launch a pinned program (clicked while it has no open window).
+fn launch_path(path: &str) {
+    unsafe {
+        let wp = util::WideStr::new(path);
+        ShellExecuteW(
+            None,
+            w!("open"),
+            wp.pcwstr(),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
     }
 }
 
@@ -904,21 +969,24 @@ fn draw_task_buttons(state: &State, hdc: HDC) {
                 fill(hdc, &b.rect, COL_HOVER);
             }
 
-            // Underline indicator: dim when running, accent when active,
-            // split into segments when the button combines several windows.
+            // Underline indicator: dim when running, accent when active, split
+            // into segments when the button combines several windows. A pinned
+            // app with no open window has no segments (and no underline).
             let segments = b.windows.len().min(3) as i32;
-            let line_color = if active { COL_ACCENT } else { COL_TEXT_DIM };
-            let line_w = b.rect.right - b.rect.left;
-            let seg_w = (line_w - scaled(2) * (segments - 1)) / segments;
-            for s in 0..segments {
-                let x = b.rect.left + s * (seg_w + scaled(2));
-                let line = RECT {
-                    left: x,
-                    top: b.rect.bottom - scaled(2),
-                    right: if s == segments - 1 { b.rect.right } else { x + seg_w },
-                    bottom: b.rect.bottom,
-                };
-                fill(hdc, &line, line_color);
+            if segments > 0 {
+                let line_color = if active { COL_ACCENT } else { COL_TEXT_DIM };
+                let line_w = b.rect.right - b.rect.left;
+                let seg_w = (line_w - scaled(2) * (segments - 1)) / segments;
+                for s in 0..segments {
+                    let x = b.rect.left + s * (seg_w + scaled(2));
+                    let line = RECT {
+                        left: x,
+                        top: b.rect.bottom - scaled(2),
+                        right: if s == segments - 1 { b.rect.right } else { x + seg_w },
+                        bottom: b.rect.bottom,
+                    };
+                    fill(hdc, &line, line_color);
+                }
             }
 
             if state.cfg.show_labels {
@@ -1184,6 +1252,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 None,
                 Start,
                 Group(Vec<HWND>),
+                Launch(String),
                 Tray(usize),
             }
             // Resolve the action inside the borrow, perform it outside: the
@@ -1198,7 +1267,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 match hit {
                     Hit::Start => Click::Start,
                     Hit::Task(i) => match s.buttons.get(i) {
-                        Some(b) => Click::Group(b.windows.clone()),
+                        Some(b) if !b.windows.is_empty() => Click::Group(b.windows.clone()),
+                        Some(b) => match &b.pinned_exe {
+                            Some(exe) => Click::Launch(exe.clone()),
+                            None => Click::None,
+                        },
                         None => Click::None,
                     },
                     Hit::TrayIcon(i) => Click::Tray(i),
@@ -1209,6 +1282,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             match action {
                 Click::Start => start_menu::toggle(),
                 Click::Group(windows) => activate_group(&windows),
+                Click::Launch(exe) => launch_path(&exe),
                 Click::Tray(i) => crate::tray::click(i, false),
                 Click::None => {}
             }

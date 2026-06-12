@@ -13,6 +13,7 @@
 mod config;
 mod desktop;
 mod peek;
+mod pins;
 mod start_menu;
 mod taskbar;
 mod tray;
