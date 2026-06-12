@@ -1,0 +1,10 @@
+# Statically link the MSVC C runtime so startpe.exe and startpe_loader.dll
+# carry no vcruntime140.dll / ucrtbase.dll dependency. This matters in WinPE:
+# the loader DLL is mapped into explorer.exe, whose DLL search path does not
+# include our Program Files\StartPE folder, so a dynamic CRT dependency that
+# isn't already in System32 would make the injected DLL fail to load silently.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
