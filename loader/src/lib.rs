@@ -23,7 +23,9 @@ use core::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering::Relaxed};
 
 use windows::core::{GUID, HRESULT, PCWSTR, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, BOOL, FALSE, HINSTANCE, HMODULE, TRUE};
+use windows::Win32::Foundation::{
+    CloseHandle, GetLastError, BOOL, FALSE, HINSTANCE, HMODULE, TRUE,
+};
 use windows::Win32::System::Diagnostics::Debug::{
     AddVectoredExceptionHandler, RtlCaptureStackBackTrace, EXCEPTION_POINTERS,
 };
@@ -34,13 +36,13 @@ use windows::Win32::System::LibraryLoader::{
 };
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 use windows::Win32::System::Threading::{
-    CreateProcessW, CreateThread, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW,
-    THREAD_CREATION_FLAGS,
+    CreateProcessW, CreateThread, GetCurrentProcessId, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION,
+    STARTUPINFOW, THREAD_CREATION_FLAGS,
 };
 
 const CLASS_E_CLASSNOTAVAILABLE: HRESULT = HRESULT(0x8004_0111u32 as i32);
 const S_FALSE: HRESULT = HRESULT(1);
-const LOG_PATH: &str = "X:\\startpe_loader.log";
+const LOG_NAME: &str = "startpe_loader.log";
 
 /// Our own module handle, stashed in `DllMain` for path resolution.
 static G_HMODULE: AtomicUsize = AtomicUsize::new(0);
@@ -65,7 +67,20 @@ pub extern "system" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c_
                 &mut pinned,
             );
 
-            IS_EXPLORER.store(host_is_explorer(), Relaxed);
+            let host = current_process_path();
+            let is_explorer = host.to_ascii_lowercase().ends_with("\\explorer.exe");
+            IS_EXPLORER.store(is_explorer, Relaxed);
+
+            // Unconditional load proof: this is how we tell, after a reboot,
+            // whether shell32 actually pulled us into Explorer (vs. the COM
+            // vector never firing). Written for every host so a stray load is
+            // visible too.
+            append_log(&format!(
+                "[startpe_loader] DLL_PROCESS_ATTACH pid={} explorer={} host={}\n",
+                GetCurrentProcessId(),
+                is_explorer,
+                host
+            ));
 
             // Install the crash logger as early as possible (first handler).
             AddVectoredExceptionHandler(1, Some(veh));
@@ -104,6 +119,7 @@ pub extern "system" fn DllCanUnloadNow() -> HRESULT {
 
 unsafe extern "system" fn worker(_param: *mut c_void) -> u32 {
     if IS_EXPLORER.load(Relaxed) {
+        append_log("[startpe_loader] worker thread running in explorer.exe\n");
         launch_startpe();
     }
     0
@@ -148,12 +164,21 @@ unsafe fn launch_startpe() {
         &si,
         &mut pi,
     );
-    if ok.is_ok() {
-        if !pi.hProcess.is_invalid() {
-            let _ = CloseHandle(pi.hProcess);
+    match ok {
+        Ok(_) => {
+            append_log(&format!("[startpe_loader] launched {exe_path}\n"));
+            if !pi.hProcess.is_invalid() {
+                let _ = CloseHandle(pi.hProcess);
+            }
+            if !pi.hThread.is_invalid() {
+                let _ = CloseHandle(pi.hThread);
+            }
         }
-        if !pi.hThread.is_invalid() {
-            let _ = CloseHandle(pi.hThread);
+        Err(_) => {
+            let err = GetLastError().0;
+            append_log(&format!(
+                "[startpe_loader] CreateProcessW failed err={err} path={exe_path}\n"
+            ));
         }
     }
 }
@@ -248,24 +273,47 @@ unsafe fn resolve_module(addr: *const c_void) -> Option<(String, usize)> {
     Some((String::from_utf16_lossy(&buf[..n as usize]), module.0 as usize))
 }
 
-unsafe fn host_is_explorer() -> bool {
+/// Full path of the host process executable (the EXE we are loaded into).
+unsafe fn current_process_path() -> String {
     let mut buf = [0u16; 520];
     let n = GetModuleFileNameW(HMODULE::default(), &mut buf);
     if n == 0 {
-        return false;
+        return String::new();
     }
     String::from_utf16_lossy(&buf[..n as usize])
-        .to_ascii_lowercase()
-        .ends_with("\\explorer.exe")
 }
 
+/// Directory containing this DLL (used as a writable log fallback when X:\ is
+/// not available).
+fn module_dir() -> Option<String> {
+    let module = HMODULE(G_HMODULE.load(Relaxed) as *mut c_void);
+    let mut buf = [0u16; 520];
+    let n = unsafe { GetModuleFileNameW(module, &mut buf) };
+    if n == 0 {
+        return None;
+    }
+    let full = String::from_utf16_lossy(&buf[..n as usize]);
+    full.rfind('\\').map(|pos| full[..=pos].to_string())
+}
+
+/// Append a line to the log. Tries the PE system drive first (X:\), then falls
+/// back to the DLL's own directory so we still capture output if X:\ is not
+/// writable in a given image.
 fn append_log(text: &str) {
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(LOG_PATH)
-    {
-        let _ = f.write_all(text.as_bytes());
+    let mut candidates = vec![format!("X:\\{LOG_NAME}")];
+    if let Some(dir) = module_dir() {
+        candidates.push(format!("{dir}{LOG_NAME}"));
+    }
+    for path in candidates {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            if f.write_all(text.as_bytes()).is_ok() {
+                return;
+            }
+        }
     }
 }
