@@ -22,9 +22,8 @@ Date=2026-06-11
 %ProgramFolder%=StartPE
 %BinaryX64%=startpe.exe
 %BinaryA64%=startpe-arm64.exe
-// Point this at a published release build, e.g.
-// https://github.com/steeb-k/startpe/releases/latest/download/startpe.exe
-%DownloadURL%=
+// Base URL for release builds; the arch-specific binary name is appended.
+%DownloadURL%=https://github.com/steeb-k/startpe/releases/latest/download/
 
 [Process]
 Echo,"Configuring [ StartPE ] as the start menu..."
@@ -96,7 +95,7 @@ RegHiveUnload,Tmp_Default
 [DownloadProgram]
 If,%DownloadURL%,Equal,"",Halt,"StartPE ERROR: No local copy of [%BinaryName%] found in [%ProgramsCache%\%ProgramFolder%] and no %DownloadURL% is configured. Build it with cargo and place it there, or set the download URL."
 Echo,"Downloading the latest version of %ScriptTitle%..."
-WebGet,%DownloadURL%,"%ProgramsCache%\%ProgramFolder%\%BinaryName%",NOERR
+WebGet,"%DownloadURL%%BinaryName%","%ProgramsCache%\%ProgramFolder%\%BinaryName%",NOERR
 If,Not,#r,Equal,200,Halt,"Download failed: The code returned was [#r]."
 
 [#ClearDownloadCache#]
