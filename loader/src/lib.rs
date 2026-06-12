@@ -27,7 +27,10 @@ use windows::Win32::Foundation::{
     CloseHandle, GetLastError, BOOL, FALSE, HINSTANCE, HMODULE, TRUE,
 };
 use windows::Win32::System::Diagnostics::Debug::{
-    AddVectoredExceptionHandler, RtlCaptureStackBackTrace, EXCEPTION_POINTERS,
+    AddVectoredExceptionHandler, FlushInstructionCache, RtlCaptureStackBackTrace, EXCEPTION_POINTERS,
+};
+use windows::Win32::System::Memory::{
+    VirtualProtect, PAGE_EXECUTE_READWRITE, PAGE_PROTECTION_FLAGS,
 };
 use windows::Win32::System::LibraryLoader::{
     DisableThreadLibraryCalls, GetModuleFileNameW, GetModuleHandleExW, GetModuleHandleW,
@@ -37,8 +40,8 @@ use windows::Win32::System::LibraryLoader::{
 use windows::Win32::System::Environment::GetCommandLineW;
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 use windows::Win32::System::Threading::{
-    CreateProcessW, CreateThread, GetCurrentProcessId, Sleep, PROCESS_CREATION_FLAGS,
-    PROCESS_INFORMATION, STARTUPINFOW, THREAD_CREATION_FLAGS,
+    CreateProcessW, CreateThread, GetCurrentProcess, GetCurrentProcessId, Sleep,
+    PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW, THREAD_CREATION_FLAGS,
 };
 use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
 
@@ -52,6 +55,8 @@ static G_HMODULE: AtomicUsize = AtomicUsize::new(0);
 static IS_EXPLORER: AtomicBool = AtomicBool::new(false);
 /// Number of fatal exceptions logged so far (capped to keep the log small).
 static LOG_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Set once we've attempted the Explorer taskbar-init patch (per process).
+static PATCH_DONE: AtomicBool = AtomicBool::new(false);
 
 #[no_mangle]
 pub extern "system" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c_void) -> BOOL {
@@ -91,6 +96,15 @@ pub extern "system" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c_
             // Install the crash logger as early as possible (first handler).
             AddVectoredExceptionHandler(1, Some(veh));
 
+            // Patch Explorer's modern-taskbar init synchronously, here under the
+            // loader lock, so it is in place the instant we are mapped -- before
+            // the shell thread can reach tray.cpp and fail-fast. Only touches
+            // already-loaded memory (VirtualProtect/write/flush), which is safe
+            // under the loader lock.
+            if is_explorer {
+                try_patch_explorer_taskbar();
+            }
+
             // Heavy work (launching startpe.exe) must not run under the loader
             // lock, so hand it to a fresh thread.
             let _ = CreateThread(
@@ -123,6 +137,15 @@ pub extern "system" fn DllCanUnloadNow() -> HRESULT {
     S_FALSE
 }
 
+/// A byte RVA known to lie inside the main body of the `tray.cpp` function
+/// that fail-fasts during modern-taskbar init (it is in the function's happy
+/// path: `mov eax,ebx ; jmp <epilogue>`). We look this RVA up in the exception
+/// table (`.pdata`) to recover the function's true entry point, then patch the
+/// entry to return immediately so the throwing taskbar init never runs and
+/// Explorer goes on to create the desktop.
+#[cfg(target_arch = "x86_64")]
+const TASKBAR_INIT_BODY_RVA: usize = 0x000d8bdb;
+
 /// RVA inside Explorer.exe of the __fastfail instruction that aborts shell
 /// init in this PE (from the WER "Application Error" fault offset). Used to
 /// dump the surrounding machine code so the suppression patch can be written.
@@ -152,6 +175,96 @@ const EXPLORER_STRING_RVAS: [usize; 5] = [
     0x248439, 0x249AF1, 0x248489, // body lea rcx targets (lookups preceding the failure)
     0x1F3A71,
 ];
+
+/// Neutralize Explorer's modern-taskbar init (StartAllBack-style). The fault
+/// is a WIL FAIL_FAST in `tray.cpp` while bringing up the Win11 taskbar, whose
+/// WinRT/AppX backing does not exist in PE. We find the enclosing function via
+/// the exception table and overwrite its entry with `xor eax,eax ; ret`
+/// (`33 C0 C3`) so it returns success without running the throwing init.
+/// StartPE supplies the visible taskbar; Explorer just needs to survive to
+/// build the desktop (wallpaper + icons).
+#[cfg(not(target_arch = "x86_64"))]
+unsafe fn try_patch_explorer_taskbar() {}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn try_patch_explorer_taskbar() {
+    if PATCH_DONE.swap(true, Relaxed) {
+        return;
+    }
+    let base = match GetModuleHandleW(PCWSTR::null()) {
+        Ok(h) => h.0 as usize,
+        Err(_) => return,
+    };
+    if base == 0 {
+        return;
+    }
+    let e_lfanew = *((base + 0x3C) as *const u32) as usize;
+    let timestamp = *((base + e_lfanew + 8) as *const u32);
+    if timestamp != EXPLORER_TIMESTAMP {
+        append_log(&format!(
+            "[startpe_loader] patch skipped: explorer timestamp 0x{timestamp:08X} != expected 0x{EXPLORER_TIMESTAMP:08X}\n"
+        ));
+        return;
+    }
+    let opt = base + e_lfanew + 24;
+    // Data directory index 3 = exception table (.pdata): RVA at +0, size at +4.
+    let exc_rva = *((opt + 112 + 3 * 8) as *const u32) as usize;
+    let exc_size = *((opt + 112 + 3 * 8 + 4) as *const u32) as usize;
+    if exc_rva == 0 || exc_size < 12 {
+        append_log("[startpe_loader] patch skipped: no exception table\n");
+        return;
+    }
+
+    // RUNTIME_FUNCTION { u32 Begin; u32 End; u32 UnwindData; } — find the entry
+    // whose [Begin, End) covers our known body RVA; Begin is the function entry.
+    let tbl = base + exc_rva;
+    let count = exc_size / 12;
+    let mut f_begin = 0usize;
+    let mut f_end = 0usize;
+    for i in 0..count {
+        let e = tbl + i * 12;
+        let begin = *(e as *const u32) as usize;
+        let end = *((e + 4) as *const u32) as usize;
+        if TASKBAR_INIT_BODY_RVA >= begin && TASKBAR_INIT_BODY_RVA < end {
+            f_begin = begin;
+            f_end = end;
+            break;
+        }
+    }
+    if f_begin == 0 {
+        append_log("[startpe_loader] patch skipped: tray.cpp function not found in .pdata\n");
+        return;
+    }
+
+    let addr = base + f_begin;
+    // Record the original prologue for verification before we touch it.
+    let mut orig = [0u8; 16];
+    for (i, b) in orig.iter_mut().enumerate() {
+        *b = *((addr + i) as *const u8);
+    }
+    if orig[0] == 0x33 && orig[1] == 0xC0 && orig[2] == 0xC3 {
+        append_log(&format!(
+            "[startpe_loader] tray.cpp function already patched at rva=0x{f_begin:X}\n"
+        ));
+        return;
+    }
+
+    let mut old = PAGE_PROTECTION_FLAGS(0);
+    if VirtualProtect(addr as *const c_void, 3, PAGE_EXECUTE_READWRITE, &mut old).is_err() {
+        append_log("[startpe_loader] patch failed: VirtualProtect\n");
+        return;
+    }
+    let patch = [0x33u8, 0xC0, 0xC3]; // xor eax,eax ; ret
+    core::ptr::copy_nonoverlapping(patch.as_ptr(), addr as *mut u8, 3);
+    let _ = VirtualProtect(addr as *const c_void, 3, old, &mut old);
+    let _ = FlushInstructionCache(GetCurrentProcess(), Some(addr as *const c_void), 3);
+
+    append_log(&format!(
+        "[startpe_loader] PATCHED tray.cpp init: rva=0x{f_begin:X} end=0x{f_end:X} \
+         prologue was [{:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}] -> 33 C0 C3\n",
+        orig[0], orig[1], orig[2], orig[3], orig[4], orig[5], orig[6], orig[7]
+    ));
+}
 
 /// Dump the bytes of Explorer.exe around the fail-fast site plus the static
 /// strings it references, to a dedicated file (overwritten each time, so the
