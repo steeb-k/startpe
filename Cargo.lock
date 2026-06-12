@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "startpe"
-version = "0.1.2"
+version = "0.1.4"
 dependencies = [
  "windows",
  "winreg",
@@ -36,7 +36,7 @@ dependencies = [
 
 [[package]]
 name = "startpe_loader"
-version = "0.1.2"
+version = "0.1.4"
 dependencies = [
  "windows",
 ]

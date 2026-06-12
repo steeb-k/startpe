@@ -34,11 +34,13 @@ use windows::Win32::System::LibraryLoader::{
     GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN,
     GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 };
+use windows::Win32::System::Environment::GetCommandLineW;
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 use windows::Win32::System::Threading::{
-    CreateProcessW, CreateThread, GetCurrentProcessId, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION,
-    STARTUPINFOW, THREAD_CREATION_FLAGS,
+    CreateProcessW, CreateThread, GetCurrentProcessId, Sleep, PROCESS_CREATION_FLAGS,
+    PROCESS_INFORMATION, STARTUPINFOW, THREAD_CREATION_FLAGS,
 };
+use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
 
 const CLASS_E_CLASSNOTAVAILABLE: HRESULT = HRESULT(0x8004_0111u32 as i32);
 const S_FALSE: HRESULT = HRESULT(1);
@@ -73,13 +75,17 @@ pub extern "system" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c_
 
             // Unconditional load proof: this is how we tell, after a reboot,
             // whether shell32 actually pulled us into Explorer (vs. the COM
-            // vector never firing). Written for every host so a stray load is
-            // visible too.
+            // vector never firing). The command line distinguishes the *shell*
+            // Explorer (bare "explorer.exe") from COM/folder-window factory
+            // instances ("explorer.exe /factory,{guid} -Embedding"), which is
+            // the key to whether the many PIDs are a shell restart loop or our
+            // own CLSID spawning surrogate processes.
             append_log(&format!(
-                "[startpe_loader] DLL_PROCESS_ATTACH pid={} explorer={} host={}\n",
+                "[startpe_loader] DLL_PROCESS_ATTACH pid={} explorer={} host={} cmdline={}\n",
                 GetCurrentProcessId(),
                 is_explorer,
-                host
+                host,
+                current_command_line()
             ));
 
             // Install the crash logger as early as possible (first handler).
@@ -121,8 +127,51 @@ unsafe extern "system" fn worker(_param: *mut c_void) -> u32 {
     if IS_EXPLORER.load(Relaxed) {
         append_log("[startpe_loader] worker thread running in explorer.exe\n");
         launch_startpe();
+        probe_shell_windows();
     }
     0
+}
+
+/// Sample which shell windows exist over a few seconds. This tells us how far
+/// Explorer's shell init gets before the process dies: `Shell_TrayWnd` is the
+/// taskbar host, `Progman`/`SHELLDLL_DefView`/`WorkerW` are the desktop that
+/// paints the wallpaper and icons. If those desktop classes never appear, the
+/// shell aborts before desktop creation (the wallpaper/icons symptom).
+unsafe fn probe_shell_windows() {
+    const CLASSES: [&str; 5] = [
+        "Shell_TrayWnd",
+        "Progman",
+        "SHELLDLL_DefView",
+        "WorkerW",
+        "TrayNotifyWnd",
+    ];
+    let pid = GetCurrentProcessId();
+    let mut last = String::new();
+    for round in 0..12u32 {
+        let mut present = String::new();
+        for c in CLASSES {
+            let wname: Vec<u16> = c.encode_utf16().chain(std::iter::once(0)).collect();
+            let exists = FindWindowW(PCWSTR(wname.as_ptr()), PCWSTR::null())
+                .map(|h| !h.is_invalid())
+                .unwrap_or(false);
+            if exists {
+                if !present.is_empty() {
+                    present.push(',');
+                }
+                present.push_str(c);
+            }
+        }
+        // Only log when the set of present windows changes, to keep the loop's
+        // restart spam down.
+        if present != last {
+            append_log(&format!(
+                "[startpe_loader] pid={pid} t={}ms windows=[{present}]\n",
+                round * 300
+            ));
+            last = present;
+        }
+        Sleep(300);
+    }
 }
 
 /// Launch `startpe.exe` from the loader's own directory. The exe name is
@@ -281,6 +330,11 @@ unsafe fn current_process_path() -> String {
         return String::new();
     }
     String::from_utf16_lossy(&buf[..n as usize])
+}
+
+/// Full command line of the host process.
+unsafe fn current_command_line() -> String {
+    GetCommandLineW().to_string().unwrap_or_default()
 }
 
 /// Directory containing this DLL (used as a writable log fallback when X:\ is
