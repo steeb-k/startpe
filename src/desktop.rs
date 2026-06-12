@@ -22,13 +22,16 @@ use std::cell::RefCell;
 use windows::core::{implement, w, Result, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::System::Com::{CoInitializeEx, IStream, COINIT_APARTMENTTHREADED};
+use windows::Win32::System::Com::{
+    CoInitializeEx, CoTaskMemFree, IStream, COINIT_APARTMENTTHREADED,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Ole::{IOleWindow_Impl, OLEMENUGROUPWIDTHS};
 use windows::Win32::UI::Controls::TBBUTTON;
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    IShellBrowser, IShellBrowser_Impl, IShellView, SHGetDesktopFolder, FOLDERSETTINGS, FVM_ICON,
+    IShellBrowser, IShellBrowser_Impl, IShellFolder, IShellView, SHBindToObject,
+    SHGetDesktopFolder, SHGetKnownFolderIDList, FOLDERID_PublicDesktop, FOLDERSETTINGS, FVM_ICON,
     FWF_DESKTOP, FWF_NOCLIENTEDGE, FWF_NOSCROLL, SVUIA_ACTIVATE_NOFOCUS,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -170,43 +173,17 @@ unsafe fn create(cfg: &Config) -> Result<()> {
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
     );
 
-    // Both must be in place before the view is created so it honors them:
-    //  - hide the namespace junctions (This PC, Home, Network, …) unless asked,
-    //  - register the wallpaper so the desktop view can paint it natively.
-    configure_desktop_icons(cfg.show_system_desktop_icons);
+    // Only BMPs are reliably accepted by SPI_SETDESKWALLPAPER; other formats
+    // are shown by our own GDI+ parent-paint, so don't risk handing the shell a
+    // format it can't paint (it could paint black over our wallpaper).
     if let Some(path) = resolve_wallpaper_path(cfg) {
-        set_system_wallpaper(&path);
-    }
-
-    host_shell_view(hwnd);
-    Ok(())
-}
-
-/// Hide (or show) the built-in desktop namespace icons (This PC, user's Home,
-/// Network, Control Panel, Recycle Bin, …) by writing the documented
-/// `HideDesktopIcons\NewStartPanel` values. StartPE hosts the desktop view
-/// in-process, so the view reads these from our own `HKCU`. Default: hidden, so
-/// only the user's real Desktop/Public-Desktop shortcuts show.
-fn configure_desktop_icons(show_system: bool) {
-    use winreg::enums::HKEY_CURRENT_USER;
-    use winreg::RegKey;
-    const HIDE_KEY: &str =
-        "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\HideDesktopIcons\\NewStartPanel";
-    // CLSIDs of the namespace junctions that appear on the desktop.
-    const CLSIDS: [&str; 6] = [
-        "{20D04FE0-3AEA-1069-A2D8-08002B30309D}", // This PC
-        "{59031a47-3f72-44a7-89c5-5595fe6b30ee}", // User's Files (Home)
-        "{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}", // Network
-        "{645FF040-5081-101B-9F08-00AA002F954E}", // Recycle Bin
-        "{5399E694-6CE5-4D6C-8FCE-1D8870FDCBA0}", // Control Panel
-        "{450D8FBA-AD25-11D0-98A8-0800361B1103}", // My Documents (legacy)
-    ];
-    let value: u32 = if show_system { 0 } else { 1 };
-    if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(HIDE_KEY) {
-        for clsid in CLSIDS {
-            let _ = key.set_value(clsid, &value);
+        if path.to_ascii_lowercase().ends_with(".bmp") {
+            set_system_wallpaper(&path);
         }
     }
+
+    host_shell_view(hwnd, cfg);
+    Ok(())
 }
 
 /// Point the desktop wallpaper at `path` so the FWF_DESKTOP view paints it.
@@ -220,17 +197,40 @@ unsafe fn set_system_wallpaper(path: &str) {
     );
 }
 
+/// The Public Desktop file-system folder (`%PUBLIC%\Desktop`), where PE builds
+/// place shortcuts. Hosting this directly shows only those real items — none of
+/// the desktop namespace junctions (This PC, Home, Network, Control Panel,
+/// Recycle Bin) that the namespace root would include.
+unsafe fn public_desktop_folder() -> Option<IShellFolder> {
+    let pidl = SHGetKnownFolderIDList(&FOLDERID_PublicDesktop, 0, None).ok()?;
+    let folder: windows::core::Result<IShellFolder> = SHBindToObject(None, pidl, None);
+    CoTaskMemFree(Some(pidl as *const c_void));
+    folder.ok()
+}
+
 /// Host the real shell desktop view (`SHELLDLL_DefView`) as a child filling the
 /// desktop window. Best-effort: if it fails we still have a wallpaper desktop
 /// rather than a black screen.
-unsafe fn host_shell_view(parent: HWND) {
-    let desktop_folder = match SHGetDesktopFolder() {
-        Ok(f) => f,
-        Err(_) => return,
+unsafe fn host_shell_view(parent: HWND, cfg: &Config) {
+    // Default: host the Public Desktop folder so only real shortcuts show. Opt
+    // in to the full desktop namespace (This PC, Home, …) via the config flag.
+    let folder: IShellFolder = if cfg.show_system_desktop_icons {
+        match SHGetDesktopFolder() {
+            Ok(f) => f,
+            Err(_) => return,
+        }
+    } else {
+        match public_desktop_folder() {
+            Some(f) => f,
+            None => match SHGetDesktopFolder() {
+                Ok(f) => f,
+                Err(_) => return,
+            },
+        }
     };
 
-    // IShellFolder::CreateViewObject(hwnd) -> IShellView (the desktop's view).
-    let view: IShellView = match desktop_folder.CreateViewObject(parent) {
+    // IShellFolder::CreateViewObject(hwnd) -> IShellView.
+    let view: IShellView = match folder.CreateViewObject(parent) {
         Ok(v) => v,
         Err(_) => return,
     };
@@ -337,13 +337,46 @@ impl IShellBrowser_Impl for DesktopBrowser_Impl {
 /// photo wallpaper should provide a .bmp, as the user-picture path already is.)
 unsafe fn load_wallpaper(cfg: &Config) -> Option<HBITMAP> {
     let path = resolve_wallpaper_path(cfg)?;
-    if !path.to_ascii_lowercase().ends_with(".bmp") {
+    load_image_gdiplus(&path)
+}
+
+/// Load any GDI+-supported image (BMP/PNG/JPG/GIF) from `path` into a standalone
+/// GDI `HBITMAP`. The HBITMAP is independent of GDI+ and outlives its shutdown.
+unsafe fn load_image_gdiplus(path: &str) -> Option<HBITMAP> {
+    use windows::Win32::Graphics::GdiPlus::{
+        GdipCreateBitmapFromFile, GdipCreateHBITMAPFromBitmap, GdipDisposeImage, GdiplusShutdown,
+        GdiplusStartup, GdiplusStartupInput, GpBitmap, GpImage, Ok as GpOk,
+    };
+
+    let mut token: usize = 0;
+    let input = GdiplusStartupInput {
+        GdiplusVersion: 1,
+        ..Default::default()
+    };
+    if GdiplusStartup(&mut token, &input, core::ptr::null_mut()) != GpOk {
         return None;
     }
-    let wp = util::WideStr::new(&path);
-    LoadImageW(None, wp.pcwstr(), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE)
-        .ok()
-        .map(|h| HBITMAP(h.0))
+
+    let wpath = util::WideStr::new(path);
+    let mut bitmap: *mut GpBitmap = core::ptr::null_mut();
+    let result = if GdipCreateBitmapFromFile(wpath.pcwstr(), &mut bitmap) == GpOk
+        && !bitmap.is_null()
+    {
+        let mut hbm = HBITMAP::default();
+        // Opaque black background for any transparent pixels (PNG/GIF).
+        let st = GdipCreateHBITMAPFromBitmap(bitmap, &mut hbm, 0xFF00_0000);
+        GdipDisposeImage(bitmap as *mut GpImage);
+        if st == GpOk && !hbm.is_invalid() {
+            Some(hbm)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    GdiplusShutdown(token);
+    result
 }
 
 /// Resolve the wallpaper path: the configured value, else the per-user Control

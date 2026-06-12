@@ -95,7 +95,7 @@ Current values (all `REG_DWORD`):
 | `CenterTaskbar`  | 1       | 1 = center the start button + task button cluster     |
 | `UserPicture`    | —       | REG_SZ path to a square .bmp for the start menu avatar |
 | `OwnDesktop`     | 0       | StartPE provides the desktop itself: 0 = auto (only if Explorer's desktop never appears), 1 = always, 2 = never |
-| `Wallpaper`      | —       | REG_SZ path to a .bmp wallpaper used when StartPE owns the desktop (falls back to `Control Panel\Desktop\WallPaper`, then a solid fill) |
+| `Wallpaper`      | —       | REG_SZ path to a wallpaper image (BMP/PNG/JPG/GIF, loaded via GDI+) used when StartPE owns the desktop (falls back to `Control Panel\Desktop\WallPaper`, then a solid fill) |
 | `DesktopColor`   | 3158560 | solid desktop background COLORREF (0x00BBGGRR) when no wallpaper bitmap is available (default 0x00302820) |
 | `ShowSystemDesktopIcons` | 0 | 1 = show the built-in desktop namespace icons (This PC, Home, Network, Control Panel, Recycle Bin); 0 = hide them so only real shortcuts show |
 
