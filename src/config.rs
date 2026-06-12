@@ -7,7 +7,7 @@
 //! layer that also honors existing StartIsBack values is planned (see
 //! docs/ARCHITECTURE.md, milestone M4).
 
-use winreg::enums::HKEY_CURRENT_USER;
+use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 use winreg::RegKey;
 
 const KEY: &str = "Software\\StartPE";
@@ -64,43 +64,54 @@ impl Default for Config {
 impl Config {
     pub fn load() -> Self {
         let mut cfg = Self::default();
-        if let Ok(key) = RegKey::predef(HKEY_CURRENT_USER).open_subkey(KEY) {
-            let read = |name: &str, target: &mut i32| {
-                if let Ok(v) = key.get_value::<u32, _>(name) {
-                    *target = v as i32;
-                }
-            };
-            read("TaskbarHeight", &mut cfg.taskbar_height);
-            read("ButtonMaxWidth", &mut cfg.button_max_width);
-            read("MenuWidth", &mut cfg.menu_width);
-            read("MenuHeight", &mut cfg.menu_height);
-            if let Ok(v) = key.get_value::<u32, _>("TaskbarLabels") {
-                cfg.show_labels = v != 0;
-            }
-            if let Ok(v) = key.get_value::<u32, _>("TaskbarCombine") {
-                cfg.combine = v != 0;
-            }
-            if let Ok(v) = key.get_value::<u32, _>("CenterTaskbar") {
-                cfg.center_taskbar = v != 0;
-            }
-            if let Ok(v) = key.get_value::<String, _>("UserPicture") {
-                if !v.is_empty() {
-                    cfg.user_picture = Some(v);
-                }
-            }
-            if let Ok(v) = key.get_value::<u32, _>("OwnDesktop") {
-                cfg.own_desktop = v;
-            }
-            if let Ok(v) = key.get_value::<String, _>("Wallpaper") {
-                if !v.is_empty() {
-                    cfg.wallpaper = Some(v);
-                }
-            }
-            if let Ok(v) = key.get_value::<u32, _>("DesktopColor") {
-                cfg.desktop_color = v;
+        // Read HKLM first: a PEBakery build writes config machine-wide because
+        // StartPE runs as SYSTEM in PE and never sees the offline Default-user
+        // hive as HKCU. Then overlay HKCU so a per-user install still wins.
+        for hive in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
+            if let Ok(key) = RegKey::predef(hive).open_subkey(KEY) {
+                cfg.apply(&key);
             }
         }
         cfg.taskbar_height = cfg.taskbar_height.clamp(24, 120);
         cfg
+    }
+
+    /// Overlay any values present under `key` onto `self` (absent values keep
+    /// whatever the lower-priority hive or the default left in place).
+    fn apply(&mut self, key: &RegKey) {
+        let read = |name: &str, target: &mut i32| {
+            if let Ok(v) = key.get_value::<u32, _>(name) {
+                *target = v as i32;
+            }
+        };
+        read("TaskbarHeight", &mut self.taskbar_height);
+        read("ButtonMaxWidth", &mut self.button_max_width);
+        read("MenuWidth", &mut self.menu_width);
+        read("MenuHeight", &mut self.menu_height);
+        if let Ok(v) = key.get_value::<u32, _>("TaskbarLabels") {
+            self.show_labels = v != 0;
+        }
+        if let Ok(v) = key.get_value::<u32, _>("TaskbarCombine") {
+            self.combine = v != 0;
+        }
+        if let Ok(v) = key.get_value::<u32, _>("CenterTaskbar") {
+            self.center_taskbar = v != 0;
+        }
+        if let Ok(v) = key.get_value::<String, _>("UserPicture") {
+            if !v.is_empty() {
+                self.user_picture = Some(v);
+            }
+        }
+        if let Ok(v) = key.get_value::<u32, _>("OwnDesktop") {
+            self.own_desktop = v;
+        }
+        if let Ok(v) = key.get_value::<String, _>("Wallpaper") {
+            if !v.is_empty() {
+                self.wallpaper = Some(v);
+            }
+        }
+        if let Ok(v) = key.get_value::<u32, _>("DesktopColor") {
+            self.desktop_color = v;
+        }
     }
 }

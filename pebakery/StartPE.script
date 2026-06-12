@@ -17,7 +17,7 @@ Author=steeb-k
 Level=3
 Selected=True
 Mandatory=False
-Version=0.1.10.0
+Version=0.1.11.0
 Date=2026-06-12
 
 [Variables]
@@ -64,8 +64,10 @@ Run,%ScriptFile%,Config
 // ===============================================================================================================================
 // Name...........: Config
 // Description....: Configure StartPE and arrange for it to launch with the shell.
-// Remarks........: All values land in the Default user hive, mounted offline -
-//                  the same pattern the StartAllBack script uses.
+// Remarks........: StartPE config goes in the SOFTWARE hive (HKLM\Software\
+//                  StartPE) because PE runs the shell as SYSTEM; the Run key
+//                  and Explorer tweaks stay in the Default-user hive. Both are
+//                  mounted offline, the same pattern the StartAllBack script uses.
 // ===============================================================================================================================
 [Config]
 Echo,"Configuring StartPE..."
@@ -94,29 +96,33 @@ RegWrite,HKLM,REG_DWORD,"Tmp_Software\Classes\Drive\shellex\FolderExtensions\%Lo
 AddAutoRun,PostShell,NoWait,"StartPE","%PEPrograms%\%ProgramFolder%\%BinaryName%"
 
 // StartPE configuration (see docs/ARCHITECTURE.md for the value reference).
-RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","TaskbarHeight",%nb_TaskbarHeight%
-RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","ButtonMaxWidth",220
-RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","MenuWidth",%nb_MenuWidth%
-RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","MenuHeight",%nb_MenuHeight%
+// Written into the SOFTWARE hive (-> HKLM\Software\StartPE at runtime), NOT the
+// Default-user hive: PE runs the shell as SYSTEM, whose HKCU is the SYSTEM
+// profile and never the offline Default-user hive, so HKCU\Software\StartPE
+// would be empty. StartPE reads HKLM first, then overlays HKCU.
+RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","TaskbarHeight",%nb_TaskbarHeight%
+RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","ButtonMaxWidth",220
+RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","MenuWidth",%nb_MenuWidth%
+RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","MenuHeight",%nb_MenuHeight%
 
 // 0 = icon-only task buttons (default), 1 = show window titles
-If,%cb_TaskbarLabels%,Equal,True,RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","TaskbarLabels",1
-Else,RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","TaskbarLabels",0
+If,%cb_TaskbarLabels%,Equal,True,RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","TaskbarLabels",1
+Else,RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","TaskbarLabels",0
 
 // 1 = combine windows of the same app into one button (default), 0 = one button per window
-If,%cb_TaskbarCombine%,Equal,True,RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","TaskbarCombine",1
-Else,RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","TaskbarCombine",0
+If,%cb_TaskbarCombine%,Equal,True,RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","TaskbarCombine",1
+Else,RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","TaskbarCombine",0
 
 // 1 = center the start button + task buttons (default), 0 = left-aligned
-If,%cb_CenterTaskbar%,Equal,True,RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","CenterTaskbar",1
-Else,RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","CenterTaskbar",0
+If,%cb_CenterTaskbar%,Equal,True,RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","CenterTaskbar",1
+Else,RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","CenterTaskbar",0
 
 // User picture shown on the start menu (circular). Provide a square .bmp
 // next to this script as UserPicture.bmp, or leave absent for the default
 // person silhouette.
 If,ExistFile,"%ScriptDir%\UserPicture.bmp",Begin
   FileCopy,"%ScriptDir%\UserPicture.bmp","%TargetPrograms%\%ProgramFolder%\UserPicture.bmp"
-  RegWrite,HKLM,REG_SZ,"Tmp_Default\Software\StartPE","UserPicture","%PEPrograms%\%ProgramFolder%\UserPicture.bmp"
+  RegWrite,HKLM,REG_SZ,"Tmp_Software\StartPE","UserPicture","%PEPrograms%\%ProgramFolder%\UserPicture.bmp"
 End
 
 // Desktop: on Win11 24H2/25H2 PE, Explorer's modern taskbar init fail-fasts and
@@ -124,16 +130,16 @@ End
 // StartPE provides the desktop itself. 1 = always own the desktop (skips the
 // detection wait; correct for these PE images). Use 0 (auto) only if some boots
 // have a working Explorer desktop, or 2 to disable.
-RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","OwnDesktop",1
+RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","OwnDesktop",1
 
 // Optional wallpaper for the StartPE-owned desktop. Provide a .bmp next to this
 // script as Wallpaper.bmp; otherwise the desktop is a solid DesktopColor fill.
 If,ExistFile,"%ScriptDir%\Wallpaper.bmp",Begin
   FileCopy,"%ScriptDir%\Wallpaper.bmp","%TargetPrograms%\%ProgramFolder%\Wallpaper.bmp"
-  RegWrite,HKLM,REG_SZ,"Tmp_Default\Software\StartPE","Wallpaper","%PEPrograms%\%ProgramFolder%\Wallpaper.bmp"
+  RegWrite,HKLM,REG_SZ,"Tmp_Software\StartPE","Wallpaper","%PEPrograms%\%ProgramFolder%\Wallpaper.bmp"
 End
 // Solid desktop background when no wallpaper bitmap (COLORREF 0x00BBGGRR).
-RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\StartPE","DesktopColor",3158560
+RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","DesktopColor",3158560
 
 // Quiet down the Win11 taskbar Explorer would otherwise populate.
 // (StartPE hides the window itself; these just avoid wasted work at logon.)
