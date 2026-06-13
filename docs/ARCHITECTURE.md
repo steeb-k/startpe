@@ -104,6 +104,7 @@ Current values (all `REG_DWORD`):
 | `Wallpaper`      | —       | REG_SZ path to a wallpaper image (BMP/PNG/JPG/GIF, loaded via GDI+) used when StartPE owns the desktop (falls back to `Control Panel\Desktop\WallPaper`, then a solid fill) |
 | `DesktopColor`   | 3158560 | solid desktop background COLORREF (0x00BBGGRR) when no wallpaper bitmap is available (default 0x00302820) |
 | `ShowSystemDesktopIcons` | 0 | 1 = show the built-in desktop namespace icons (This PC, Home, Network, Control Panel, Recycle Bin); 0 = hide them so only real shortcuts show |
+| `StartButtonColor` | 15790320 | Start button glyph color COLORREF (0x00BBGGRR); default 0x00F0F0F0 (near-white) |
 
 Launch: the PEBakery script writes the Run key for classic logon flows and
 calls `AddAutoRun,PostShell` so winrx-creator/PhoenixPE images start StartPE

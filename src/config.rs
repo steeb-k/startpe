@@ -45,6 +45,9 @@ pub struct Config {
     /// Control Panel, Recycle Bin). Default off, so only the user's real
     /// Desktop / Public-Desktop shortcuts appear.
     pub show_system_desktop_icons: bool,
+    /// Color of the Start button's four-square glyph (COLORREF 0x00BBGGRR).
+    /// Defaults to the same near-white as the taskbar text.
+    pub start_button_color: u32,
 }
 
 impl Default for Config {
@@ -62,6 +65,7 @@ impl Default for Config {
             wallpaper: None,
             desktop_color: 0x0030_2820,
             show_system_desktop_icons: false,
+            start_button_color: 0x00F0_F0F0,
         }
     }
 }
@@ -120,6 +124,9 @@ impl Config {
         }
         if let Ok(v) = key.get_value::<u32, _>("ShowSystemDesktopIcons") {
             self.show_system_desktop_icons = v != 0;
+        }
+        if let Ok(v) = key.get_value::<u32, _>("StartButtonColor") {
+            self.start_button_color = v;
         }
     }
 }

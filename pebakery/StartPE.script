@@ -17,7 +17,7 @@ Author=steeb-k
 Level=3
 Selected=True
 Mandatory=False
-Version=0.1.30.0
+Version=0.1.31.0
 Date=2026-06-12
 
 [Variables]
@@ -123,6 +123,10 @@ Else,RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","TaskbarCombine",0
 // 1 = center the start button + task buttons (default), 0 = left-aligned
 If,%cb_CenterTaskbar%,Equal,True,RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","CenterTaskbar",1
 Else,RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","CenterTaskbar",0
+
+// Start button glyph color (COLORREF 0x00BBGGRR). Default 15790320 = 0x00F0F0F0
+// (near-white). Set e.g. 15760384 (0x00F08000) for an accent-blue start button.
+RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","StartButtonColor",15790320
 
 // User picture shown on the start menu (circular). Provide a square .bmp
 // next to this script as UserPicture.bmp, or leave absent for the default
