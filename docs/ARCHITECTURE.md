@@ -172,11 +172,9 @@ that is not implemented yet.
   controls; Enter activates; Right expands a ">" folder row; from the search box
   Right reaches the Shut down button and its flyout). Remaining: recent/frequent
   programs list.
-- **M4: theming + StartIsBack config compatibility.** Win7/Win10/Win11 visual
-  styles, orb bitmaps, transparency; read the `Software\StartIsBack` values
-  the existing PEBakery scripts already write (`Start_ShowRun`,
-  `TaskbarLocation`, icon sizes, …) and map them onto StartPE settings so
-  existing build scripts work with minimal changes.
+- **M4: theming + customization.** Win7/Win10/Win11 visual styles, orb bitmaps,
+  transparency; more of the existing config exposed in the settings pane; a clock
+  calendar flyout.
 
 ## The Win11 24H2/25H2 PE desktop problem (and why StartPE owns the desktop)
 

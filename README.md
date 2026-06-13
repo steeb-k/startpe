@@ -18,8 +18,7 @@ start menu (with full keyboard navigation), system tray, an in-app settings
 pane, an Alt+Tab switcher, and — on PE images where Explorer can't bring up its
 own desktop — a real wallpaper + icon desktop. It's still actively developed;
 see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the roadmap
-(theming, a clock calendar flyout, more customization, StartIsBack config
-compatibility).
+(theming, a clock calendar flyout, and more customization).
 
 ## Features
 
