@@ -12,7 +12,6 @@
 
 mod config;
 mod desktop;
-mod desktop_filter;
 mod peek;
 mod pins;
 mod start_menu;
