@@ -11,10 +11,11 @@
 //! feeds the search. Arrow keys move a shared focus highlight (`hover`, reused by
 //! mouse and keyboard) across the program list, the right-pane links, the search
 //! box, and the power controls; Enter activates the focused item, and Right on a
-//! ">" folder row expands it. Spatially: from the search box Right → Shut down →
-//! its flyout chevron → (Right again) opens the Restart / Shut down flyout, with
-//! Restart highlighted by default. The menu accent (search-box focus border) is
-//! the Start button glyph color. See `navigate` / `resolve` / `perform`.
+//! ">" folder row expands it. Spatially: from the search box Right → the Shut
+//! down button (the ">" is part of it) → Right again opens the Restart / Shut
+//! down flyout (Restart highlighted by default, opening to the right of the
+//! button). The menu accent (search-box focus border) is the Start button glyph
+//! color. See `navigate` / `resolve` / `perform`.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -594,6 +595,17 @@ fn shutdown_chevron_rect(m: &MenuState) -> RECT {
     }
 }
 
+/// The whole Shut down button, including the ">" chevron — used as one unit for
+/// the hover/focus highlight (the chevron is part of the button).
+fn shutdown_button_rect(m: &MenuState) -> RECT {
+    RECT {
+        left: m.width - scaled(140),
+        top: footer_top(m),
+        right: m.width - scaled(6),
+        bottom: m.height,
+    }
+}
+
 fn in_rect(r: &RECT, x: i32, y: i32) -> bool {
     x >= r.left && x < r.right && y >= r.top && y < r.bottom
 }
@@ -939,10 +951,11 @@ fn draw_footer(m: &MenuState, hdc: HDC) {
             );
         }
 
-        // Shut down + chevron.
+        // Shut down + chevron — one button: the whole thing highlights together,
+        // whether the cursor/focus is on the label or the ">".
         let sd = shutdown_rect(m);
-        if m.hover == Hit::Shutdown {
-            fill(hdc, &sd, COL_HOVER);
+        if m.hover == Hit::Shutdown || m.hover == Hit::ShutdownMenu {
+            fill(hdc, &shutdown_button_rect(m), COL_HOVER);
         }
         SelectObject(hdc, m.font_glyph);
         SetTextColor(hdc, COLORREF(COL_TEXT));
@@ -962,10 +975,8 @@ fn draw_footer(m: &MenuState, hdc: HDC) {
         };
         draw_str(hdc, "Shut down", &mut tr, DT_SINGLELINE | DT_VCENTER);
 
+        // The ">" chevron, drawn within the same (already-highlighted) button.
         let cv = shutdown_chevron_rect(m);
-        if m.hover == Hit::ShutdownMenu {
-            fill(hdc, &cv, COL_HOVER);
-        }
         SelectObject(hdc, m.font_glyph);
         SetTextColor(hdc, COLORREF(COL_TEXT_DIM));
         let mut gr = RECT {
@@ -1087,14 +1098,17 @@ enum Action {
     ShutdownMenu(i32, i32),
 }
 
-/// Screen anchor (top-left of the Shut down button) for the power flyout.
+/// Screen anchor for the power flyout. Returns the button's bottom-right corner
+/// so the flyout (left-aligned, bottom-aligned) opens up and to the *right* of
+/// the button; `TrackPopupMenu` slides it back on-screen only if there's no room
+/// to the right.
 fn shutdown_anchor(m: &MenuState) -> (i32, i32) {
     let mut wr = RECT::default();
     unsafe {
         let _ = GetWindowRect(m.hwnd, &mut wr);
     }
-    let sd = shutdown_rect(m);
-    (wr.left + sd.left, wr.top + sd.top)
+    let b = shutdown_button_rect(m);
+    (wr.left + b.right, wr.top + b.bottom)
 }
 
 /// Resolve the action for activating `hit`, mutating navigation state in place.
@@ -1283,11 +1297,11 @@ fn navigate(m: &mut MenuState, dir: Dir) {
         (Hit::Right(i), Dir::Up) => Hit::Right(i.saturating_sub(1)),
         (Hit::Right(_), Dir::Left) => first_focus(m),
 
-        // Power controls (footer-right).
-        (Hit::Shutdown, Dir::Right) => Hit::ShutdownMenu,
+        // Shut down button (footer-right). It's one unit including the ">";
+        // Right is intercepted before navigate to open the flyout, so it never
+        // focuses the chevron separately. Left → search, Up → right pane.
         (Hit::Shutdown, Dir::Left) => Hit::Search,
-        (Hit::ShutdownMenu, Dir::Left) => Hit::Shutdown,
-        (Hit::Shutdown | Hit::ShutdownMenu, Dir::Up) => {
+        (Hit::Shutdown, Dir::Up) => {
             if r > 0 {
                 Hit::Right(r - 1)
             } else {
@@ -1423,8 +1437,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                             {
                                 return Some(resolve(m, Hit::Row(i)));
                             }
-                            // Right on the power chevron opens the flyout.
-                            Hit::ShutdownMenu => return Some(resolve(m, Hit::ShutdownMenu)),
+                            // Right on the (focused) Shut down button opens the
+                            // power flyout — the ">" is part of this button.
+                            Hit::Shutdown => return Some(resolve(m, Hit::ShutdownMenu)),
                             _ => {}
                         }
                     }
