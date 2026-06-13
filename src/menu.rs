@@ -189,6 +189,10 @@ struct Menu {
     kb_hook: HHOOK,
     mouse_hook: HHOOK,
     winevent: HWINEVENTHOOK,
+    /// Last cursor position handled, to ignore the synthetic, no-movement
+    /// `WM_MOUSEMOVE` that showing a submenu window can generate (it would
+    /// otherwise close the submenu we just opened by keyboard).
+    last_mouse: (i32, i32),
 }
 
 /// Build a dark popup menu from `(command_id, label)` items (empty label =
@@ -270,6 +274,7 @@ pub fn track_items(
                 kb_hook: HHOOK::default(),
                 mouse_hook: HHOOK::default(),
                 winevent: HWINEVENTHOOK::default(),
+                last_mouse: (i32::MIN, i32::MIN),
             });
         });
         place_panel(hwnd, px, py, w, h);
@@ -565,6 +570,11 @@ unsafe fn open_submenu(parent_idx: usize, item_idx: usize, select_first: bool) {
     };
     MENU.with_borrow_mut(|m| {
         if let Some(m) = m.as_mut() {
+            // Keep the parent's submenu row highlighted while its flyout is open
+            // (so a keyboard-opened submenu reads as "this row is active").
+            if let Some(parent) = m.panels.get_mut(parent_idx) {
+                parent.hover = Some(item_idx);
+            }
             m.panels.push(Panel {
                 hwnd: child,
                 items: children,
@@ -576,7 +586,7 @@ unsafe fn open_submenu(parent_idx: usize, item_idx: usize, select_first: bool) {
         }
     });
     place_panel(child, cx, cy, w, h);
-    let _ = InvalidateRect(child, None, true);
+    invalidate_all();
 }
 
 fn invalidate_all() {
@@ -805,6 +815,19 @@ fn set_result(cmd: u32) {
 /// Update hover for a screen point and open/close submenus to match. Returns
 /// true if anything visible changed.
 unsafe fn on_mouse_move(pt: POINT) {
+    // Ignore moves that don't actually move the cursor — Windows can post a
+    // synthetic WM_MOUSEMOVE when a window appears under/over the pointer, and
+    // acting on it would close a submenu the keyboard just opened.
+    let moved = MENU.with_borrow_mut(|m| match m.as_mut() {
+        Some(m) if m.last_mouse != (pt.x, pt.y) => {
+            m.last_mouse = (pt.x, pt.y);
+            true
+        }
+        _ => false,
+    });
+    if !moved {
+        return;
+    }
     let Some((pi, ii, is_sub, is_sep)) = MENU.with_borrow(|m| m.as_ref().and_then(|m| hit_panel_item(m, pt)))
     else {
         return;
