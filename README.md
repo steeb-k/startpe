@@ -78,7 +78,9 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the roadmap
   Computer Management, Terminal (the default `%ComSpec%` processor), Task Manager,
   File Explorer, Run, a Shut down / Restart flyout, and Desktop — the PE-relevant
   subset of the Windows 11 menu. Drawn as a rounded, dark, custom popup (no DWM
-  required), with hover/keyboard navigation and a submenu flyout.
+  required), with hover/keyboard navigation, a submenu flyout, and Windows 11
+  access keys (the underlined letter activates the item). Any click or new
+  window outside the menu dismisses it.
 
 ### Dark theming
 - Dark, rounded, custom-drawn popup menus (taskbar context menu, power flyout,

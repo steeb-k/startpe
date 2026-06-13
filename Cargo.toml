@@ -3,7 +3,7 @@ members = ["loader"]
 
 [package]
 name = "startpe"
-version = "0.1.46"
+version = "0.1.47"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Free, open-source taskbar and start menu for Windows PE environments"
@@ -36,6 +36,7 @@ features = [
     "Win32_System_Threading",
     "Win32_UI_Controls",
     "Win32_UI_Controls_Dialogs",
+    "Win32_UI_Accessibility",
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",

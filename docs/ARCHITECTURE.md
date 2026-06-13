@@ -76,15 +76,19 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   `TrackPopupMenu` can't get rounded corners without DWM (absent in PE) and its
   owner-drawn separators still take mouse highlight, so each menu level is its
   own `WS_POPUP` window with a rounded GDI region, painted dark with documented
-  GDI. It needs no activation: the root window takes the mouse capture (clicks
-  are routed by hit-testing screen coords against the open panels) and keyboard
-  nav arrives via a transient `WH_KEYBOARD_LL` hook — so it never dismisses the
-  window that opened it (the start menu hosts its power flyout this way). Items
-  are entries, separators (never selectable), or submenus (child window opened to
-  the right with a chevron). Used by the taskbar right-click menu, the start
-  menu's power flyout, and the Win+X power-user menu (`taskbar::show_winx_menu`:
-  a PE-trimmed Win11 power menu — system/admin tools, Terminal at `%ComSpec%`,
-  Run, the power flyout — opened by Win+X or by right-clicking the start button)
+  GDI. It never takes activation (`WS_EX_NOACTIVATE`), so it doesn't dismiss the
+  window that opened it (the start menu hosts its power flyout this way). Because
+  a background window's mouse capture only sees clicks while the cursor is over
+  it, input is watched globally for the menu's lifetime via three transient
+  hooks: `WH_KEYBOARD_LL` (navigation + `&`-marked access keys, Win11-style),
+  `WH_MOUSE_LL` (any click outside dismisses), and an `EVENT_SYSTEM_FOREGROUND`
+  WinEvent hook (another window coming up dismisses). Clicks/moves inside arrive
+  as ordinary window messages. Items are entries, separators (never selectable),
+  or submenus (child window opened to the right with a chevron). Used by the
+  taskbar right-click menu, the start menu's power flyout, and the Win+X
+  power-user menu (`taskbar::show_winx_menu`: a PE-trimmed Win11 power menu —
+  system/admin tools, Terminal at `%ComSpec%`, Run, the power flyout — opened by
+  Win+X or by right-clicking the start button)
 - `src/run_dialog.rs` — the shell Run dialog done right: calls shell32's
   `RunFileDlg` (ordinal 61) directly with a proper icon + prompt (vs the
   iconless "RunDLL" box `rundll32 shell32.dll,#61` produces) and a one-shot
