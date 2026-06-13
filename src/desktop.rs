@@ -18,18 +18,18 @@
 
 use core::ffi::c_void;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
 use windows::core::{implement, w, Result, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::System::Com::{CoInitializeEx, IStream, COINIT_APARTMENTTHREADED};
+use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, IStream, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Ole::{IOleWindow_Impl, OLEMENUGROUPWIDTHS};
 use windows::Win32::UI::Controls::TBBUTTON;
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    IShellBrowser, IShellBrowser_Impl, IShellView, SHGetDesktopFolder, FOLDERSETTINGS, FVM_ICON,
+    IShellBrowser, IShellBrowser_Impl, IShellFolder, IShellView, SHBindToObject,
+    SHGetDesktopFolder, SHGetKnownFolderIDList, FOLDERID_PublicDesktop, FOLDERSETTINGS, FVM_ICON,
     FWF_DESKTOP, FWF_NOCLIENTEDGE, FWF_NOSCROLL, SVUIA_ACTIVATE_NOFOCUS,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -49,6 +49,9 @@ struct DesktopState {
     _browser: Option<IShellBrowser>,
     /// The `SHELLDLL_DefView` child window, resized to track the desktop.
     view_hwnd: HWND,
+    /// The desktop `SysListView32` (icon list), for layout save/restore (next).
+    #[allow(dead_code)]
+    listview: HWND,
 }
 
 thread_local! {
@@ -136,6 +139,7 @@ unsafe fn create(cfg: &Config) -> Result<()> {
             _view: None,
             _browser: None,
             view_hwnd: HWND::default(),
+            listview: HWND::default(),
         })
     });
 
@@ -196,133 +200,92 @@ unsafe fn set_system_wallpaper(path: &str) {
 }
 
 /// The full namespace-desktop view (includes the junctions). Used when the user
-/// opts to show the system icons, and as a fallback if filtering fails.
+/// opts to show the system icons, and as a fallback.
 unsafe fn full_desktop_view(parent: HWND) -> Option<IShellView> {
     SHGetDesktopFolder().ok()?.CreateViewObject(parent).ok()
 }
 
-/// Host the real shell desktop view (`SHELLDLL_DefView`) as a child filling the
-/// desktop window. Best-effort: if it fails we still have a wallpaper desktop
-/// rather than a black screen.
+/// A view of the Public Desktop file-system folder (`%PUBLIC%\Desktop`), where
+/// PE builds place shortcuts. Hosting it shows only those real items — none of
+/// the desktop namespace junctions (This PC, Home, Network, Control Panel,
+/// Recycle Bin).
+unsafe fn public_desktop_view(parent: HWND) -> Option<IShellView> {
+    let pidl = SHGetKnownFolderIDList(&FOLDERID_PublicDesktop, 0, None).ok()?;
+    let folder: windows::core::Result<IShellFolder> = SHBindToObject(None, pidl, None);
+    CoTaskMemFree(Some(pidl as *const c_void));
+    folder.ok()?.CreateViewObject(parent).ok()
+}
+
+/// Host the desktop icon view (`SHELLDLL_DefView`) as a child filling the desktop
+/// window. Best-effort: on failure we still have a wallpaper desktop.
 unsafe fn host_shell_view(parent: HWND, cfg: &Config) {
-    // Default: the namespace desktop with the junctions (This PC, Home, Network,
-    // Control Panel, Recycle Bin) filtered out programmatically — so only real
-    // shortcuts show, while the Shell\Bags\1\Desktop icon layout still applies.
-    // ShowSystemDesktopIcons hosts the full namespace desktop instead.
-    use crate::desktop_filter::dlog;
-    dlog(&format!(
-        "=== StartPE desktop v{} === host_shell_view show_system={}",
-        env!("CARGO_PKG_VERSION"),
-        cfg.show_system_desktop_icons
-    ));
+    // Default: the Public Desktop folder (junction-free). ShowSystemDesktopIcons
+    // hosts the full namespace desktop (with junctions). A `CreateViewObject`
+    // view + FWF_DESKTOP works with our minimal browser; the generic
+    // SHCreateShellFolderView view does not, so we host the folder directly.
+    let view: IShellView = if cfg.show_system_desktop_icons {
+        match full_desktop_view(parent) {
+            Some(v) => v,
+            None => return,
+        }
+    } else {
+        match public_desktop_view(parent) {
+            Some(v) => v,
+            None => match full_desktop_view(parent) {
+                Some(v) => v,
+                None => return,
+            },
+        }
+    };
 
     let mut rc = RECT::default();
     let _ = GetClientRect(parent, &mut rc);
-    let browser: IShellBrowser = DesktopBrowser { hwnd: parent }.into();
-
-    let fs_desktop = FOLDERSETTINGS {
+    let fs = FOLDERSETTINGS {
         ViewMode: FVM_ICON.0 as u32,
         fFlags: (FWF_DESKTOP | FWF_NOCLIENTEDGE | FWF_NOSCROLL).0 as u32,
     };
-    // Plain icon view (no FWF_DESKTOP). FWF_DESKTOP appears to be special to the
-    // real desktop folder's own view and makes CreateViewWindow fail (E_FAIL) on
-    // a generic DefView; the plain view needs a manually transparent list so the
-    // wallpaper shows through.
-    let fs_plain = FOLDERSETTINGS {
-        ViewMode: FVM_ICON.0 as u32,
-        fFlags: (FWF_NOCLIENTEDGE | FWF_NOSCROLL).0 as u32,
+    let browser: IShellBrowser = DesktopBrowser { hwnd: parent }.into();
+    let view_hwnd = match view.CreateViewWindow(None, &fs, &browser, &rc) {
+        Ok(h) => h,
+        Err(_) => return,
     };
-
-    // Try, in order, until CreateViewWindow succeeds: (1) filtered desktop
-    // (junction-free) with FWF_DESKTOP, (2) filtered desktop plain + manual
-    // transparency, (3) full namespace desktop with FWF_DESKTOP (junctions show).
-    // `make_transparent` marks the case that needs the list made transparent.
-    let mut chosen: Option<(IShellView, HWND, bool)> = None;
-
-    if !cfg.show_system_desktop_icons {
-        if chosen.is_none() {
-            if let Some(v) = crate::desktop_filter::create_filtered_desktop_view() {
-                if let Some(h) = try_view_window(&v, &fs_desktop, &browser, &rc, "filtered+desktop") {
-                    chosen = Some((v, h, false));
-                }
-            }
-        }
-        if chosen.is_none() {
-            if let Some(v) = crate::desktop_filter::create_filtered_desktop_view() {
-                if let Some(h) = try_view_window(&v, &fs_plain, &browser, &rc, "filtered+plain") {
-                    chosen = Some((v, h, true));
-                }
-            }
-        }
-    }
-    if chosen.is_none() {
-        if let Some(v) = full_desktop_view(parent) {
-            if let Some(h) = try_view_window(&v, &fs_desktop, &browser, &rc, "full+desktop") {
-                chosen = Some((v, h, false));
-            }
-        }
-    }
-
-    let Some((view, view_hwnd, make_transparent)) = chosen else {
-        dlog("no desktop view succeeded");
-        return;
-    };
-
-    if make_transparent {
-        make_listview_transparent(view_hwnd);
-    }
     let _ = view.UIActivate(SVUIA_ACTIVATE_NOFOCUS.0 as u32);
     let _ = ShowWindow(view_hwnd, SW_SHOW);
+
+    let listview = setup_desktop_list(view_hwnd);
 
     DESKTOP.with_borrow_mut(|d| {
         if let Some(d) = d {
             d.view_hwnd = view_hwnd;
+            d.listview = listview;
             d._view = Some(view);
             d._browser = Some(browser);
         }
     });
 }
 
-/// Try `IShellView::CreateViewWindow`; log and return the view-window handle.
-unsafe fn try_view_window(
-    view: &IShellView,
-    fs: &FOLDERSETTINGS,
-    browser: &IShellBrowser,
-    rc: &RECT,
-    label: &str,
-) -> Option<HWND> {
-    match view.CreateViewWindow(None, fs, browser, rc) {
-        Ok(h) => {
-            crate::desktop_filter::dlog(&format!(
-                "{label}: CreateViewWindow OK hwnd=0x{:X}",
-                h.0 as usize
-            ));
-            Some(h)
-        }
-        Err(e) => {
-            crate::desktop_filter::dlog(&format!("{label}: CreateViewWindow ERR {e:?}"));
-            None
-        }
-    }
-}
-
-/// Make the desktop list (the `SysListView32` inside `SHELLDLL_DefView`)
-/// transparent so the wallpaper shows through when we can't use FWF_DESKTOP.
-unsafe fn make_listview_transparent(defview: HWND) {
+/// Configure the desktop `SysListView32` for free, tidy positioning: auto-arrange
+/// OFF (dragged icons stay where put) and snap-to-grid ON (they align to a grid).
+/// Returns the list-view handle.
+unsafe fn setup_desktop_list(defview: HWND) -> HWND {
+    const LVS_AUTOARRANGE: isize = 0x0100;
     const LVM_SETEXTENDEDLISTVIEWSTYLE: u32 = 0x1036;
-    const LVS_EX_TRANSPARENTBKGND: usize = 0x0040_0000;
-    const LVS_EX_TRANSPARENTSHADOWTEXT: usize = 0x0080_0000;
-    if let Ok(lv) = FindWindowExW(defview, None, w!("SysListView32"), None) {
-        if !lv.is_invalid() {
-            let mask = LVS_EX_TRANSPARENTBKGND | LVS_EX_TRANSPARENTSHADOWTEXT;
-            SendMessageW(
-                lv,
-                LVM_SETEXTENDEDLISTVIEWSTYLE,
-                WPARAM(mask),
-                LPARAM(mask as isize),
-            );
-        }
+    const LVS_EX_SNAPTOGRID: usize = 0x0008_0000;
+    let Ok(lv) = FindWindowExW(defview, None, w!("SysListView32"), None) else {
+        return HWND::default();
+    };
+    if lv.is_invalid() {
+        return HWND::default();
     }
+    let style = GetWindowLongPtrW(lv, GWL_STYLE);
+    SetWindowLongPtrW(lv, GWL_STYLE, style & !LVS_AUTOARRANGE);
+    SendMessageW(
+        lv,
+        LVM_SETEXTENDEDLISTVIEWSTYLE,
+        WPARAM(LVS_EX_SNAPTOGRID),
+        LPARAM(LVS_EX_SNAPTOGRID as isize),
+    );
+    lv
 }
 
 /// Minimal `IShellBrowser` host for the desktop's `SHELLDLL_DefView`. The view
@@ -333,71 +296,47 @@ struct DesktopBrowser {
     hwnd: HWND,
 }
 
-/// TEMP: log which `IShellBrowser` callbacks the DefView makes (capped), to see
-/// what the generic `SHCreateShellFolderView` view requires of the host browser.
-static BROWSER_LOG: AtomicU32 = AtomicU32::new(0);
-fn blog(name: &str) {
-    if BROWSER_LOG.fetch_add(1, Relaxed) < 60 {
-        crate::desktop_filter::dlog(&format!("browser: {name}"));
-    }
-}
-
 #[allow(non_snake_case)]
 impl IOleWindow_Impl for DesktopBrowser_Impl {
     fn GetWindow(&self) -> Result<HWND> {
-        blog("GetWindow");
         Ok(self.hwnd)
     }
     fn ContextSensitiveHelp(&self, _fentermode: BOOL) -> Result<()> {
-        blog("ContextSensitiveHelp");
         Ok(())
     }
 }
 
 #[allow(non_snake_case)]
 impl IShellBrowser_Impl for DesktopBrowser_Impl {
-    // The generic DefView negotiates its menu bar via these during
-    // CreateViewWindow; a host with no menu bar must return S_OK (reserving no
-    // space), not E_NOTIMPL — E_NOTIMPL makes CreateViewWindow fail (E_FAIL).
+    // A menu-less host returns S_OK (reserving no menu space), not E_NOTIMPL.
     fn InsertMenusSB(&self, _hmenushared: HMENU, lpmenuwidths: *mut OLEMENUGROUPWIDTHS) -> Result<()> {
-        blog("InsertMenusSB");
-        // Reserve no menu groups; leaving the widths uninitialized can make the
-        // DefView's menu merge (and thus CreateViewWindow) fail.
         if !lpmenuwidths.is_null() {
             unsafe { (*lpmenuwidths).width = [0; 6] };
         }
         Ok(())
     }
     fn SetMenuSB(&self, _hmenushared: HMENU, _holemenures: isize, _hwndactiveobject: HWND) -> Result<()> {
-        blog("SetMenuSB");
         Ok(())
     }
     fn RemoveMenusSB(&self, _hmenushared: HMENU) -> Result<()> {
-        blog("RemoveMenusSB");
         Ok(())
     }
     fn SetStatusTextSB(&self, _pszstatustext: &PCWSTR) -> Result<()> {
-        blog("SetStatusTextSB");
         Ok(())
     }
     fn EnableModelessSB(&self, _fenable: BOOL) -> Result<()> {
-        blog("EnableModelessSB");
         Ok(())
     }
     fn TranslateAcceleratorSB(&self, _pmsg: *const MSG, _wid: u16) -> Result<()> {
-        blog("TranslateAcceleratorSB");
         Err(E_NOTIMPL.into())
     }
     fn BrowseObject(&self, _pidl: *const ITEMIDLIST, _wflags: u32) -> Result<()> {
-        blog("BrowseObject");
         Err(E_NOTIMPL.into())
     }
     fn GetViewStateStream(&self, _grfmode: u32) -> Result<IStream> {
-        blog("GetViewStateStream");
         Err(E_NOTIMPL.into())
     }
     fn GetControlWindow(&self, _id: u32) -> Result<HWND> {
-        blog("GetControlWindow");
         Err(E_NOTIMPL.into())
     }
     fn SendControlMsg(
@@ -408,27 +347,22 @@ impl IShellBrowser_Impl for DesktopBrowser_Impl {
         _lparam: LPARAM,
         _pret: *mut LRESULT,
     ) -> Result<()> {
-        blog("SendControlMsg");
         Err(E_NOTIMPL.into())
     }
     fn QueryActiveShellView(&self) -> Result<IShellView> {
-        blog("QueryActiveShellView");
         Err(E_NOTIMPL.into())
     }
     fn OnViewWindowActive(&self, _pshv: Option<&IShellView>) -> Result<()> {
-        blog("OnViewWindowActive");
         Ok(())
     }
     fn SetToolbarItems(&self, _lpbuttons: *const TBBUTTON, _nbuttons: u32, _uflags: u32) -> Result<()> {
-        blog("SetToolbarItems");
         Err(E_NOTIMPL.into())
     }
 }
 
-/// Resolve and load the wallpaper bitmap (BMP). Tries the configured path, then
-/// the per-user Control Panel wallpaper value. Returns `None` to fall back to a
-/// solid fill. (Only BMP is supported via `LoadImageW`; PE scripts that want a
-/// photo wallpaper should provide a .bmp, as the user-picture path already is.)
+/// Load the wallpaper bitmap (BMP/PNG/JPG via GDI+). Tries the configured path,
+/// then the per-user Control Panel wallpaper value; `None` falls back to a solid
+/// fill.
 unsafe fn load_wallpaper(cfg: &Config) -> Option<HBITMAP> {
     let path = resolve_wallpaper_path(cfg)?;
     load_image_gdiplus(&path)
