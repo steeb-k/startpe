@@ -961,6 +961,13 @@ fn show_taskbar_menu(hwnd: HWND) {
     }
 }
 
+/// Whether the start button + task buttons are centered (vs left-aligned). Read
+/// live from the current config, so the start menu can match the button's edge
+/// even after the setting is toggled at runtime.
+pub fn is_centered() -> bool {
+    STATE.with_borrow(|s| s.as_ref().map(|s| s.cfg.center_taskbar).unwrap_or(true))
+}
+
 /// Re-read the registry config and apply the changes that can take effect live
 /// (button combining, labels, centering — all recomputed in `refresh_buttons`).
 /// Called by the settings pane after it writes a value. Settings that need the

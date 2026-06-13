@@ -97,7 +97,7 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   (`%Windir%\System32\PinUtil.ini`, `[PinUtil]` `Taskbar<n>`/`StartMenu<n>` =
   exe path) so StartPE can render pinned taskbar/start-menu items
 - `src/settings.rs` — the settings pane: a dark owner-drawn GDI window of the
-  boolean config switches, grouped by surface (Taskbar / Desktop / Menus), plus
+  boolean config switches, grouped by surface (Taskbar / Menus), plus
   the Start button glyph color (preset swatches + a Custom… button that opens the
   documented comdlg32 `ChooseColorW` dialog). Opened from the taskbar's right-click
   menu. Changing a row writes the value to `HKCU\Software\StartPE` (see
@@ -135,7 +135,7 @@ Current values (all `REG_DWORD`):
 | `Wallpaper`      | —       | REG_SZ path to a wallpaper image (BMP/PNG/JPG/GIF, loaded via GDI+) used when StartPE owns the desktop (falls back to `Control Panel\Desktop\WallPaper`, then a solid fill) |
 | `DesktopColor`   | 3158560 | solid desktop background COLORREF (0x00BBGGRR) when no wallpaper bitmap is available (default 0x00302820) |
 | `ShowSystemDesktopIcons` | 0 | 1 = show the built-in desktop namespace icons (This PC, Home, Network, Control Panel, Recycle Bin); 0 = hide them so only real shortcuts show |
-| `StartButtonColor` | 15790320 | Start button glyph color COLORREF (0x00BBGGRR); default 0x00F0F0F0 (near-white) |
+| `StartButtonColor` | 15096500 | Start button glyph color COLORREF (0x00BBGGRR); default 0x00E65AB4 (purple, RGB 180,90,230) |
 | `DarkMenus` | 1 | 1 = dark-mode the shell menus created in our process (chiefly the hosted desktop's right-click context menu) via uxtheme dark app mode; 0 = leave them light (see `darkmode.rs`) |
 
 Launch: the PEBakery script writes the Run key for classic logon flows and

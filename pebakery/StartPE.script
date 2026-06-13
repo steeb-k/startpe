@@ -17,7 +17,7 @@ Author=steeb-k
 Level=3
 Selected=True
 Mandatory=False
-Version=0.1.39.0
+Version=0.1.40.0
 Date=2026-06-13
 
 [Variables]
@@ -126,7 +126,7 @@ Else,RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","CenterTaskbar",0
 
 // Start button glyph color (COLORREF 0x00BBGGRR). Default 15790320 = 0x00F0F0F0
 // (near-white). Set e.g. 15760384 (0x00F08000) for an accent-blue start button.
-RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","StartButtonColor",15790320
+RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","StartButtonColor",15096500
 
 // Dark-mode the shell-rendered menus StartPE raises (chiefly the desktop
 // right-click context menu, which StartPE hosts in-process). 1 = dark (default),

@@ -3,7 +3,7 @@
 //!
 //! StartPE has a fistful of registry-backed switches (see `config.rs`). This is
 //! the first slice of a real settings pane: the boolean toggles, grouped by the
-//! surface they affect (Taskbar / Desktop / Menus), with a checkbox each, plus
+//! surface they affect (Taskbar / Menus), with a checkbox each, plus
 //! the Start button glyph color (preset swatches + a Custom… picker). Opened
 //! from the taskbar's right-click menu (Settings).
 //!
@@ -71,13 +71,6 @@ const TOGGLES: &[Toggle] = &[
         reg: "CenterTaskbar",
         get: |c| c.center_taskbar,
         restart: false,
-    },
-    Toggle {
-        group: "Desktop",
-        label: "Show system desktop icons",
-        reg: "ShowSystemDesktopIcons",
-        get: |c| c.show_system_desktop_icons,
-        restart: true,
     },
     Toggle {
         group: "Menus",
