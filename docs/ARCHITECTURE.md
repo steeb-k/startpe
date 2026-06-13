@@ -67,6 +67,10 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   folder navigation, footer actions (Run / Cmd / Reboot / Shutdown)
 - `src/desktop.rs` — StartPE-owned desktop (wallpaper + hosted shell icon
   view), created only when Explorer's own desktop never appears
+- `src/desktop_filter.rs` — a filtering `IShellFolder`/`IPersistFolder2` wrapper
+  that hides the desktop namespace junctions (This PC, Home, Network, Control
+  Panel, Recycle Bin) from the hosted view while keeping the desktop identity so
+  the `Bags\1\Desktop` icon layout still applies
 - `src/pins.rs` — reads the winrx-creator/PhoenixPE `PinUtil.ini` staging file
   (`%Windir%\System32\PinUtil.ini`, `[PinUtil]` `Taskbar<n>`/`StartMenu<n>` =
   exe path) so StartPE can render pinned taskbar/start-menu items
@@ -160,10 +164,15 @@ Two consequences fix the design:
    unbounded per-build maintenance we won't take on.
 2. **So StartPE provides the desktop itself** (`src/desktop.rs`) when Explorer's
    never appears: it creates a `Progman`-style window at the bottom of the
-   z-order, paints the wallpaper, and hosts the *real* shell desktop view
-   (`SHELLDLL_DefView`, via `IShellFolder::CreateViewObject`/`IShellView` — plain
-   shell32, which works in PE). Desktop icons, the right-click menu, and
-   double-click-opens-a-folder behave exactly as users expect. Explorer is still
+   z-order, paints the wallpaper (BMP/PNG/JPG via GDI+), and hosts the *real*
+   shell desktop view (`SHELLDLL_DefView` — plain shell32, which works in PE).
+   By default it hosts the namespace desktop through a filtering wrapper
+   (`src/desktop_filter.rs`) that drops the junction items (This PC, Home,
+   Network, Control Panel, Recycle Bin) but keeps the desktop identity, so only
+   real shortcuts show *and* the `Bags\1\Desktop` icon layout (written by the
+   PEBakery `DesktopLayout` tweak) still applies; `ShowSystemDesktopIcons=1`
+   hosts the unfiltered namespace instead. Desktop icons, the right-click menu,
+   and double-click-opens-a-folder behave as users expect. Explorer is still
    launched on demand as the file manager; it just no longer has to be the shell.
    On a normal box (or a PE where Explorer's desktop does come up) StartPE detects
    it and stays out of the way. Behavior is `OwnDesktop` (0 auto / 1 always /
