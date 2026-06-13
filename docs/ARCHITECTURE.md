@@ -67,6 +67,15 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   Explorer-taskbar suppression
 - `src/start_menu.rs` — start menu popup, Start Menu folder enumeration,
   folder navigation, footer actions (Run / Cmd / Reboot / Shutdown)
+- `src/peek.rs` — taskbar-button hover previews (DWM thumbnails where available,
+  icon/title rows otherwise)
+- `src/alttab.rs` — Windows 11–style Alt+Tab switcher. A `WH_KEYBOARD_LL` hook
+  captures Alt+Tab before the system switcher fires and drives a centered,
+  rounded overlay: one tile per top-level window (app icon + title + a
+  `PrintWindow` screenshot), flowing left-to-right and wrapping into a grid once
+  a row would pass ~85% of the screen width. No DWM dependency (static
+  screenshots, not live thumbnails); releasing Alt / Enter / a click activates
+  the selection, Esc cancels
 - `src/desktop.rs` — StartPE-owned desktop (wallpaper + hosted Public Desktop
   icon view with its own icon-layout save/restore), created only when Explorer's
   own desktop never appears

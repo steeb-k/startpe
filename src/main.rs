@@ -10,6 +10,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod alttab;
 mod config;
 mod desktop;
 mod peek;
@@ -79,6 +80,7 @@ fn main() -> windows::core::Result<()> {
         start_menu::create(&cfg, taskbar.hwnd)?;
         tray::create(taskbar.hwnd)?;
         taskbar::install_win_key_hook();
+        alttab::install();
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
