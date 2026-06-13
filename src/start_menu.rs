@@ -7,11 +7,12 @@
 //! (circular, protruding above the menu — done with a window region, no DWM
 //! required) and a column of system links. Footer: search + Shut down.
 //!
-//! Keyboard: typing always feeds the search (a caret marks the box). Arrow keys
-//! move a shared focus highlight (`hover`, reused by mouse and keyboard) across
-//! the program list, the right-pane links, and the power controls; Enter
-//! activates the focused item; Left/Right cross panes (list → Right → Right
-//! lands on the power flyout). See `navigate` / `resolve` / `perform`.
+//! Keyboard: the search box is focused on open (caret in it), and typing always
+//! feeds the search. Arrow keys move a shared focus highlight (`hover`, reused by
+//! mouse and keyboard) across the program list, the right-pane links, the search
+//! box, and the power controls; Enter activates the focused item, and Right on a
+//! ">" folder row expands it. Spatially: from the search box Right → Shut down →
+//! its flyout chevron. See `navigate` / `resolve` / `perform`.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -29,7 +30,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::config::Config;
 use crate::taskbar::{
-    make_font, make_font_face, scaled, COL_BG, COL_HOVER, COL_TEXT, COL_TEXT_DIM,
+    make_font, make_font_face, scaled, COL_ACCENT, COL_BG, COL_HOVER, COL_TEXT, COL_TEXT_DIM,
 };
 use crate::util;
 
@@ -96,6 +97,8 @@ enum Hit {
     AllPrograms,
     Shutdown,
     ShutdownMenu,
+    /// The search box (focused on open; typing always feeds it).
+    Search,
 }
 
 struct MenuState {
@@ -294,9 +297,9 @@ pub fn toggle() {
                 m.scroll = 0;
                 m.showing_all = false;
                 rebuild(m);
-                // Open with the first program focused, so the arrow keys and
-                // Enter work immediately (keyboard-first).
-                m.hover = first_focus(m);
+                // Open with the search box focused (keyboard-first): typing
+                // searches immediately, Right moves to the Shut down button.
+                m.hover = Hit::Search;
             });
             // Anchor above the taskbar with a gap. Centered taskbar → centered
             // menu (Windows 11 style); left-aligned taskbar → flush bottom-left,
@@ -580,6 +583,9 @@ fn hit_test(m: &MenuState, x: i32, y: i32) -> Hit {
         if in_rect(&shutdown_chevron_rect(m), x, y) {
             return Hit::ShutdownMenu;
         }
+        if in_rect(&search_box_rect(m), x, y) {
+            return Hit::Search;
+        }
         return Hit::None;
     }
     if x < left_pane_right(m) {
@@ -857,10 +863,15 @@ fn draw_right_pane(m: &MenuState, hdc: HDC) {
 
 fn draw_footer(m: &MenuState, hdc: HDC) {
     unsafe {
-        // Search box (pill).
+        // Search box (pill). Accent border when it holds keyboard focus.
         let sb = search_box_rect(m);
+        let focused = m.hover == Hit::Search;
         let brush = CreateSolidBrush(COLORREF(COL_SEARCH_BG));
-        let pen = CreatePen(PS_SOLID, 1, COLORREF(COL_SEP));
+        let pen = CreatePen(
+            PS_SOLID,
+            if focused { scaled(1).max(1) } else { 1 },
+            COLORREF(if focused { COL_ACCENT } else { COL_SEP }),
+        );
         let old_brush = SelectObject(hdc, brush);
         let old_pen = SelectObject(hdc, pen);
         let r = sb.bottom - sb.top;
@@ -1115,7 +1126,7 @@ fn resolve(m: &mut MenuState, hit: Hit) -> Action {
             let (x, y) = shutdown_anchor(m);
             Action::ShutdownMenu(x, y)
         }
-        Hit::None => Action::None,
+        Hit::Search | Hit::None => Action::None,
     }
 }
 
@@ -1194,6 +1205,11 @@ fn navigate(m: &mut MenuState, dir: Dir) {
     let r = m.rights.len();
     let cur = m.hover;
     let new = match (cur, dir) {
+        // Search box (footer-left, focused on open): Right → Shut down, Up → list.
+        (Hit::Search, Dir::Right) => Hit::Shutdown,
+        (Hit::Search, Dir::Up) => Hit::AllPrograms,
+        (Hit::Search, _) => Hit::Search,
+
         // Nothing focused yet: arrow into the natural region.
         (Hit::None, Dir::Right) => {
             if r > 0 {
@@ -1204,7 +1220,8 @@ fn navigate(m: &mut MenuState, dir: Dir) {
         }
         (Hit::None, _) => first_focus(m),
 
-        // Left pane (program rows + All apps), vertical.
+        // Left pane (program rows + All apps), vertical. Down past the bottom
+        // (the All apps row) lands on the search box below it.
         (Hit::Row(i), Dir::Down) => {
             if i + 1 < n {
                 Hit::Row(i + 1)
@@ -1220,7 +1237,9 @@ fn navigate(m: &mut MenuState, dir: Dir) {
                 Hit::AllPrograms
             }
         }
-        // Left pane → right pane.
+        (Hit::AllPrograms, Dir::Down) => Hit::Search,
+        // Left pane → right pane. (Folder rows are intercepted before navigate
+        // so Right expands them instead; this is for launcher / All-apps rows.)
         (Hit::Row(_) | Hit::AllPrograms, Dir::Right) => {
             if r > 0 {
                 Hit::Right(0)
@@ -1229,23 +1248,21 @@ fn navigate(m: &mut MenuState, dir: Dir) {
             }
         }
 
-        // Right pane, vertical.
-        (Hit::Right(i), Dir::Down) => Hit::Right((i + 1).min(r.saturating_sub(1))),
-        (Hit::Right(i), Dir::Up) => Hit::Right(i.saturating_sub(1)),
-        // Right pane → list / power.
-        (Hit::Right(_), Dir::Left) => first_focus(m),
-        (Hit::Right(_), Dir::Right) => Hit::ShutdownMenu,
-
-        // Power controls.
-        (Hit::ShutdownMenu, Dir::Left) => Hit::Shutdown,
-        (Hit::Shutdown, Dir::Right) => Hit::ShutdownMenu,
-        (Hit::Shutdown, Dir::Left) => {
-            if r > 0 {
-                Hit::Right(0)
+        // Right pane, vertical. Down past the bottom drops to the power button.
+        (Hit::Right(i), Dir::Down) => {
+            if i + 1 < r {
+                Hit::Right(i + 1)
             } else {
-                first_focus(m)
+                Hit::Shutdown
             }
         }
+        (Hit::Right(i), Dir::Up) => Hit::Right(i.saturating_sub(1)),
+        (Hit::Right(_), Dir::Left) => first_focus(m),
+
+        // Power controls (footer-right).
+        (Hit::Shutdown, Dir::Right) => Hit::ShutdownMenu,
+        (Hit::Shutdown, Dir::Left) => Hit::Search,
+        (Hit::ShutdownMenu, Dir::Left) => Hit::Shutdown,
         (Hit::Shutdown | Hit::ShutdownMenu, Dir::Up) => {
             if r > 0 {
                 Hit::Right(r - 1)
@@ -1336,7 +1353,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     } else {
                         m.query.clear();
                         rebuild(m);
-                        m.hover = first_focus(m);
+                        m.hover = Hit::Search;
                         true
                     }
                 });
@@ -1351,12 +1368,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     hide(hwnd);
                 }
             } else if vk == VK_RETURN.0 as u32 {
-                // Activate the focused item; with nothing focused (e.g. just
-                // typed a search), fall back to the first launchable result.
+                // Activate the focused item; with the search box (or nothing)
+                // focused, fall back to the first launchable result.
                 let action = MENU.with_borrow_mut(|m| {
                     let m = m.as_mut().unwrap();
                     let hit = match m.hover {
-                        Hit::None => m
+                        Hit::Search | Hit::None => m
                             .items
                             .iter()
                             .position(|i| matches!(i.kind, ItemKind::Launch(_)))
@@ -1367,8 +1384,27 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 });
                 perform(hwnd, action);
             } else if let Some(dir) = arrow_dir(vk) {
-                MENU.with_borrow_mut(|m| navigate(m.as_mut().unwrap(), dir));
-                let _ = InvalidateRect(hwnd, None, false);
+                // Right on a ">" folder row expands it (like Enter); otherwise
+                // it's plain focus movement.
+                let action = MENU.with_borrow_mut(|m| {
+                    let m = m.as_mut().unwrap();
+                    if matches!(dir, Dir::Right) {
+                        if let Hit::Row(i) = m.hover {
+                            if matches!(m.items.get(i).map(|it| &it.kind), Some(ItemKind::Folder(_)))
+                            {
+                                return Some(resolve(m, Hit::Row(i)));
+                            }
+                        }
+                    }
+                    navigate(m, dir);
+                    None
+                });
+                match action {
+                    Some(a) => perform(hwnd, a),
+                    None => {
+                        let _ = InvalidateRect(hwnd, None, false);
+                    }
+                }
             }
             LRESULT(0)
         }
@@ -1386,8 +1422,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 };
                 if edited {
                     rebuild(m);
-                    // Keep focus on the top result so Enter launches it.
-                    m.hover = first_focus(m);
+                    // Typing keeps focus in the search box (Enter launches the
+                    // top result via the fallback).
+                    m.hover = Hit::Search;
                 }
                 edited
             });

@@ -167,10 +167,11 @@ that is not implemented yet.
   `StartMenu` pins with an All apps / Pinned toggle), search box (filter as you
   type over the indexed shortcut list, with a blinking caret), right-pane links
   (Computer, Control Panel, Downloads, Run), user picture, keyboard navigation
-  (done — arrow keys move a shared focus highlight across the program list, the
-  right-pane links, and the power controls; Enter activates; Left/Right cross
-  panes so the list → Right → Right reaches the power flyout). Remaining:
-  recent/frequent programs list.
+  (done — the search box is focused on open; arrow keys move a shared focus
+  highlight across the program list, right-pane links, search box, and power
+  controls; Enter activates; Right expands a ">" folder row; from the search box
+  Right reaches the Shut down button and its flyout). Remaining: recent/frequent
+  programs list.
 - **M4: theming + StartIsBack config compatibility.** Win7/Win10/Win11 visual
   styles, orb bitmaps, transparency; read the `Software\StartIsBack` values
   the existing PEBakery scripts already write (`Start_ShowRun`,
