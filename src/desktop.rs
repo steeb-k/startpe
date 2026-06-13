@@ -22,16 +22,13 @@ use std::cell::RefCell;
 use windows::core::{implement, w, Result, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::System::Com::{
-    CoInitializeEx, CoTaskMemFree, IStream, COINIT_APARTMENTTHREADED,
-};
+use windows::Win32::System::Com::{CoInitializeEx, IStream, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Ole::{IOleWindow_Impl, OLEMENUGROUPWIDTHS};
 use windows::Win32::UI::Controls::TBBUTTON;
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    IShellBrowser, IShellBrowser_Impl, IShellFolder, IShellView, SHBindToObject,
-    SHGetDesktopFolder, SHGetKnownFolderIDList, FOLDERID_PublicDesktop, FOLDERSETTINGS, FVM_ICON,
+    IShellBrowser, IShellBrowser_Impl, IShellView, SHGetDesktopFolder, FOLDERSETTINGS, FVM_ICON,
     FWF_DESKTOP, FWF_NOCLIENTEDGE, FWF_NOSCROLL, SVUIA_ACTIVATE_NOFOCUS,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -197,42 +194,33 @@ unsafe fn set_system_wallpaper(path: &str) {
     );
 }
 
-/// The Public Desktop file-system folder (`%PUBLIC%\Desktop`), where PE builds
-/// place shortcuts. Hosting this directly shows only those real items — none of
-/// the desktop namespace junctions (This PC, Home, Network, Control Panel,
-/// Recycle Bin) that the namespace root would include.
-unsafe fn public_desktop_folder() -> Option<IShellFolder> {
-    let pidl = SHGetKnownFolderIDList(&FOLDERID_PublicDesktop, 0, None).ok()?;
-    let folder: windows::core::Result<IShellFolder> = SHBindToObject(None, pidl, None);
-    CoTaskMemFree(Some(pidl as *const c_void));
-    folder.ok()
+/// The full namespace-desktop view (includes the junctions). Used when the user
+/// opts to show the system icons, and as a fallback if filtering fails.
+unsafe fn full_desktop_view(parent: HWND) -> Option<IShellView> {
+    SHGetDesktopFolder().ok()?.CreateViewObject(parent).ok()
 }
 
 /// Host the real shell desktop view (`SHELLDLL_DefView`) as a child filling the
 /// desktop window. Best-effort: if it fails we still have a wallpaper desktop
 /// rather than a black screen.
 unsafe fn host_shell_view(parent: HWND, cfg: &Config) {
-    // Default: host the Public Desktop folder so only real shortcuts show. Opt
-    // in to the full desktop namespace (This PC, Home, …) via the config flag.
-    let folder: IShellFolder = if cfg.show_system_desktop_icons {
-        match SHGetDesktopFolder() {
-            Ok(f) => f,
-            Err(_) => return,
+    // Default: the namespace desktop with the junctions (This PC, Home, Network,
+    // Control Panel, Recycle Bin) filtered out programmatically — so only real
+    // shortcuts show, while the Shell\Bags\1\Desktop icon layout still applies.
+    // ShowSystemDesktopIcons hosts the full namespace desktop instead.
+    let view: IShellView = if cfg.show_system_desktop_icons {
+        match full_desktop_view(parent) {
+            Some(v) => v,
+            None => return,
         }
     } else {
-        match public_desktop_folder() {
-            Some(f) => f,
-            None => match SHGetDesktopFolder() {
-                Ok(f) => f,
-                Err(_) => return,
+        match crate::desktop_filter::create_filtered_desktop_view() {
+            Some(v) => v,
+            None => match full_desktop_view(parent) {
+                Some(v) => v,
+                None => return,
             },
         }
-    };
-
-    // IShellFolder::CreateViewObject(hwnd) -> IShellView.
-    let view: IShellView = match folder.CreateViewObject(parent) {
-        Ok(v) => v,
-        Err(_) => return,
     };
 
     let mut rc = RECT::default();

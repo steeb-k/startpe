@@ -17,7 +17,7 @@ Author=steeb-k
 Level=3
 Selected=True
 Mandatory=False
-Version=0.1.16.0
+Version=0.1.17.0
 Date=2026-06-12
 
 [Variables]
