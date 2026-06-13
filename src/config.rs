@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Configuration, read from the registry at startup.
 //!
-//! Values live under `HKCU\Software\StartPE` so a PEBakery script can write
-//! them into the mounted Default hive at image-build time, exactly the way
-//! the StartAllBack script writes `Software\StartIsBack`. A compatibility
-//! layer that also honors existing StartIsBack values is planned (see
-//! docs/ARCHITECTURE.md, milestone M4).
+//! Values are read from `HKLM\Software\StartPE` first, then overlaid by
+//! `HKCU\Software\StartPE`. A PEBakery build writes them machine-wide into the
+//! offline SOFTWARE hive (the PE shell runs as SYSTEM, so HKLM is what it sees);
+//! the in-app settings pane writes runtime changes to HKCU. See the value table
+//! in docs/ARCHITECTURE.md.
 
 use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 use winreg::RegKey;

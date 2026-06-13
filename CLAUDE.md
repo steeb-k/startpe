@@ -98,8 +98,8 @@ version in `Cargo.toml` and the script's `[Main]` section when tagging.
 
 ## PE integration context
 
-The PEBakery script writes config into the mounted **Default user** hive at
-image build time (offline), and launches StartPE via the Run key processed by
-Explorer at logon. The reference for conventions is the PhoenixPE
-StartAllBack script (MIT, by Homes32). A future milestone (M4) adds a compat
-layer reading existing `Software\StartIsBack` values — see the roadmap.
+The PEBakery script writes config machine-wide into the offline **SOFTWARE**
+hive (`HKLM\Software\StartPE`) at image build time, because the PE shell runs as
+`SYSTEM` and never sees the Default-user hive as `HKCU` at runtime. It also wires
+up launch (Run key / `AddAutoRun,PostShell`). The reference for script
+conventions is the PhoenixPE StartAllBack script (MIT, by Homes32).
