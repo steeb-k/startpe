@@ -18,6 +18,7 @@
 
 use core::ffi::c_void;
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
 use windows::core::{implement, w, Result, PCWSTR};
 use windows::Win32::Foundation::*;
@@ -331,12 +332,23 @@ struct DesktopBrowser {
     hwnd: HWND,
 }
 
+/// TEMP: log which `IShellBrowser` callbacks the DefView makes (capped), to see
+/// what the generic `SHCreateShellFolderView` view requires of the host browser.
+static BROWSER_LOG: AtomicU32 = AtomicU32::new(0);
+fn blog(name: &str) {
+    if BROWSER_LOG.fetch_add(1, Relaxed) < 60 {
+        crate::desktop_filter::dlog(&format!("browser: {name}"));
+    }
+}
+
 #[allow(non_snake_case)]
 impl IOleWindow_Impl for DesktopBrowser_Impl {
     fn GetWindow(&self) -> Result<HWND> {
+        blog("GetWindow");
         Ok(self.hwnd)
     }
     fn ContextSensitiveHelp(&self, _fentermode: BOOL) -> Result<()> {
+        blog("ContextSensitiveHelp");
         Ok(())
     }
 }
@@ -344,30 +356,39 @@ impl IOleWindow_Impl for DesktopBrowser_Impl {
 #[allow(non_snake_case)]
 impl IShellBrowser_Impl for DesktopBrowser_Impl {
     fn InsertMenusSB(&self, _hmenushared: HMENU, _lpmenuwidths: *mut OLEMENUGROUPWIDTHS) -> Result<()> {
+        blog("InsertMenusSB");
         Err(E_NOTIMPL.into())
     }
     fn SetMenuSB(&self, _hmenushared: HMENU, _holemenures: isize, _hwndactiveobject: HWND) -> Result<()> {
+        blog("SetMenuSB");
         Err(E_NOTIMPL.into())
     }
     fn RemoveMenusSB(&self, _hmenushared: HMENU) -> Result<()> {
+        blog("RemoveMenusSB");
         Err(E_NOTIMPL.into())
     }
     fn SetStatusTextSB(&self, _pszstatustext: &PCWSTR) -> Result<()> {
+        blog("SetStatusTextSB");
         Ok(())
     }
     fn EnableModelessSB(&self, _fenable: BOOL) -> Result<()> {
+        blog("EnableModelessSB");
         Ok(())
     }
     fn TranslateAcceleratorSB(&self, _pmsg: *const MSG, _wid: u16) -> Result<()> {
+        blog("TranslateAcceleratorSB");
         Err(E_NOTIMPL.into())
     }
     fn BrowseObject(&self, _pidl: *const ITEMIDLIST, _wflags: u32) -> Result<()> {
+        blog("BrowseObject");
         Err(E_NOTIMPL.into())
     }
     fn GetViewStateStream(&self, _grfmode: u32) -> Result<IStream> {
+        blog("GetViewStateStream");
         Err(E_NOTIMPL.into())
     }
     fn GetControlWindow(&self, _id: u32) -> Result<HWND> {
+        blog("GetControlWindow");
         Err(E_NOTIMPL.into())
     }
     fn SendControlMsg(
@@ -378,15 +399,19 @@ impl IShellBrowser_Impl for DesktopBrowser_Impl {
         _lparam: LPARAM,
         _pret: *mut LRESULT,
     ) -> Result<()> {
+        blog("SendControlMsg");
         Err(E_NOTIMPL.into())
     }
     fn QueryActiveShellView(&self) -> Result<IShellView> {
+        blog("QueryActiveShellView");
         Err(E_NOTIMPL.into())
     }
     fn OnViewWindowActive(&self, _pshv: Option<&IShellView>) -> Result<()> {
+        blog("OnViewWindowActive");
         Ok(())
     }
     fn SetToolbarItems(&self, _lpbuttons: *const TBBUTTON, _nbuttons: u32, _uflags: u32) -> Result<()> {
+        blog("SetToolbarItems");
         Err(E_NOTIMPL.into())
     }
 }
