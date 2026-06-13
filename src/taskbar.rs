@@ -1001,15 +1001,13 @@ fn show_winx_menu(hwnd: HWND, select_first: bool) {
         Item::Entry(17, "File &Explorer"),
         Item::Entry(18, "&Run"),
         Item::Separator,
-        Item::Submenu("Shut down or sign o&ut", &power),
+        Item::Submenu("Sh&ut down or sign out", &power),
         Item::Entry(22, "&Desktop"),
     ];
     let cmd = crate::menu::track_items(hwnd, x, y, TPM_BOTTOMALIGN, &items, select_first);
     match cmd {
         10 => run("eventvwr.exe", ""),
-        // "System" — the classic System Properties dialog (This PC ▸ Properties),
-        // since PE has no Settings app (and not every build ships msinfo32).
-        11 => run("control.exe", "sysdm.cpl"),
+        11 => run("msinfo32.exe", ""),
         12 => run("mmc.exe", "devmgmt.msc"),
         13 => run("mmc.exe", "diskmgmt.msc"),
         14 => run("mmc.exe", "compmgmt.msc"),
