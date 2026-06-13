@@ -67,6 +67,10 @@ struct Item {
     icon: Option<HICON>,
 }
 
+/// Sentinel `RightItem::cmd` that opens the shell Run dialog instead of being
+/// `ShellExecute`'d.
+const RUN_DIALOG_CMD: &str = "@startpe:run-dialog";
+
 /// Right-pane link. Launched as `ShellExecute(cmd, args)`; a bare folder
 /// path as `cmd` opens in Explorer.
 struct RightItem {
@@ -257,8 +261,10 @@ fn build_right_items() -> Vec<RightItem> {
         RightItem {
             glyph: GLYPH_RUN,
             label: "Run…".to_string(),
-            cmd: "rundll32.exe".to_string(),
-            args: "shell32.dll,#61".to_string(),
+            // Sentinel: routed to the shell Run dialog (run_dialog.rs), not
+            // ShellExecute'd — so it gets a proper icon/prompt and placement.
+            cmd: RUN_DIALOG_CMD.to_string(),
+            args: String::new(),
         },
     ]
 }
@@ -1120,6 +1126,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 Navigate,
                 Launch(PathBuf),
                 Exec(String, String),
+                RunDialog(HWND),
                 Shutdown,
                 ShutdownMenu,
             }
@@ -1154,7 +1161,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     }
                     Hit::Right(i) => {
                         let it = &m.rights[i];
-                        Action::Exec(it.cmd.clone(), it.args.clone())
+                        if it.cmd == RUN_DIALOG_CMD {
+                            Action::RunDialog(m.taskbar)
+                        } else {
+                            Action::Exec(it.cmd.clone(), it.args.clone())
+                        }
                     }
                     Hit::Shutdown => Action::Shutdown,
                     Hit::ShutdownMenu => Action::ShutdownMenu,
@@ -1172,6 +1183,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 Action::Exec(cmd, args) => {
                     hide(hwnd);
                     exec(&cmd, &args);
+                }
+                Action::RunDialog(taskbar) => {
+                    hide(hwnd);
+                    let mut rc = RECT::default();
+                    let _ = GetWindowRect(taskbar, &mut rc);
+                    crate::run_dialog::show(taskbar, rc.top);
                 }
                 Action::Shutdown => {
                     hide(hwnd);

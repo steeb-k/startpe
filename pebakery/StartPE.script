@@ -17,7 +17,7 @@ Author=steeb-k
 Level=3
 Selected=True
 Mandatory=False
-Version=0.1.34.0
+Version=0.1.35.0
 Date=2026-06-12
 
 [Variables]
@@ -181,6 +181,12 @@ If,ExistFile,"%ScriptDir%\desktop-layout.txt",FileCopy,"%ScriptDir%\desktop-layo
 RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\Microsoft\Windows\CurrentVersion\Search","SearchboxTaskbarMode",0
 RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced","ShowTaskViewButton",0
 RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced","TaskbarMn",0
+
+// Default to dark mode so theme-aware apps come up dark on their own. This is
+// just the documented system setting (no injection): apps that honor it follow
+// it, apps that ignore it stay light. StartPE's own UI is dark regardless.
+RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize","AppsUseLightTheme",0
+RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize","SystemUsesLightTheme",0
 
 RegHiveUnload,Tmp_Default
 RegHiveUnload,Tmp_Software
