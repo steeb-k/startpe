@@ -71,8 +71,13 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   icon/title rows otherwise)
 - `src/menu.rs` — dark owner-drawn popup menus (`MF_OWNERDRAW` + forwarded
   `WM_MEASUREITEM`/`WM_DRAWITEM`), since plain `HMENU`s can only be darkened via
-  the forbidden undocumented uxtheme ordinals. Used by the taskbar right-click
-  menu and the start menu's power flyout
+  undocumented uxtheme ordinals. Used by the taskbar right-click menu and the
+  start menu's power flyout
+- `src/darkmode.rs` — opt-out (`DarkMenus`, default on) dark mode for the
+  *shell-rendered* menus our process raises (the hosted desktop context menu),
+  via the undocumented uxtheme dark-mode ordinals. The one sanctioned
+  undocumented-API exception in `startpe.exe` besides `tray.rs`: build-gated,
+  confined to this module, and fails closed to light menus
 - `src/alttab.rs` — Windows 11–style Alt+Tab switcher. A `WH_KEYBOARD_LL` hook
   captures Alt+Tab before the system switcher fires and drives a centered,
   rounded overlay: one tile per top-level window (app icon + title + a
@@ -118,6 +123,7 @@ Current values (all `REG_DWORD`):
 | `DesktopColor`   | 3158560 | solid desktop background COLORREF (0x00BBGGRR) when no wallpaper bitmap is available (default 0x00302820) |
 | `ShowSystemDesktopIcons` | 0 | 1 = show the built-in desktop namespace icons (This PC, Home, Network, Control Panel, Recycle Bin); 0 = hide them so only real shortcuts show |
 | `StartButtonColor` | 15790320 | Start button glyph color COLORREF (0x00BBGGRR); default 0x00F0F0F0 (near-white) |
+| `DarkMenus` | 1 | 1 = dark-mode the shell menus created in our process (chiefly the hosted desktop's right-click context menu) via uxtheme dark app mode; 0 = leave them light (see `darkmode.rs`) |
 
 Launch: the PEBakery script writes the Run key for classic logon flows and
 calls `AddAutoRun,PostShell` so winrx-creator/PhoenixPE images start StartPE

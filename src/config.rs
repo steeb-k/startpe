@@ -48,6 +48,11 @@ pub struct Config {
     /// Color of the Start button's four-square glyph (COLORREF 0x00BBGGRR).
     /// Defaults to the same near-white as the taskbar text.
     pub start_button_color: u32,
+    /// Dark-mode the shell-rendered menus created in our process (chiefly the
+    /// hosted desktop's right-click context menu) via the uxtheme dark-mode
+    /// app mode. Default on; set 0 to disable if a future Windows build renders
+    /// them badly. See `darkmode.rs`.
+    pub dark_menus: bool,
 }
 
 impl Default for Config {
@@ -66,6 +71,7 @@ impl Default for Config {
             desktop_color: 0x0030_2820,
             show_system_desktop_icons: false,
             start_button_color: 0x00F0_F0F0,
+            dark_menus: true,
         }
     }
 }
@@ -127,6 +133,9 @@ impl Config {
         }
         if let Ok(v) = key.get_value::<u32, _>("StartButtonColor") {
             self.start_button_color = v;
+        }
+        if let Ok(v) = key.get_value::<u32, _>("DarkMenus") {
+            self.dark_menus = v != 0;
         }
     }
 }

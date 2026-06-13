@@ -226,6 +226,9 @@ unsafe fn create(cfg: &Config) -> Result<()> {
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
     );
 
+    // Let the desktop window (and the shell view + menus it raises) theme dark.
+    crate::darkmode::allow_window(hwnd);
+
     // Only BMPs are reliably accepted by SPI_SETDESKWALLPAPER; other formats
     // are shown by our own GDI+ parent-paint, so don't risk handing the shell a
     // format it can't paint (it could paint black over our wallpaper).
@@ -311,6 +314,8 @@ unsafe fn host_shell_view(parent: HWND, cfg: &Config) {
     };
     let _ = view.UIActivate(SVUIA_ACTIVATE_NOFOCUS.0 as u32);
     let _ = ShowWindow(view_hwnd, SW_SHOW);
+    // The defview hosts the desktop right-click context menu — allow it dark.
+    crate::darkmode::allow_window(view_hwnd);
 
     DESKTOP.with_borrow_mut(|d| {
         if let Some(d) = d {
@@ -823,6 +828,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 if let Ok(found) = FindWindowExW(view_hwnd, None, w!("SysListView32"), None) {
                     if !found.is_invalid() {
                         lv = found;
+                        crate::darkmode::allow_window(lv);
                         if let Some(v) = &view {
                             configure_view_flags(v);
                         }
