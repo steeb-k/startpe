@@ -14,7 +14,6 @@ use windows::Win32::Globalization::{
     GetDateFormatEx, GetTimeFormatEx, DATE_SHORTDATE, TIME_NOSECONDS,
 };
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
-use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::SystemInformation::GetLocalTime;
@@ -593,7 +592,10 @@ fn window_title(hwnd: HWND) -> String {
 
 fn window_icon(hwnd: HWND) -> Option<HICON> {
     unsafe {
-        for wparam in [ICON_SMALL2 as usize, ICON_SMALL as usize, ICON_BIG as usize] {
+        // Prefer the largest published icon. The small icons are 16px and look
+        // blurry once upscaled to a task button (drawn at scaled(24)), so ask
+        // for the big icon first and only fall back to the small ones.
+        for wparam in [ICON_BIG as usize, ICON_SMALL as usize, ICON_SMALL2 as usize] {
             let mut result: usize = 0;
             let _ = SendMessageTimeoutW(
                 hwnd,
@@ -608,11 +610,11 @@ fn window_icon(hwnd: HWND) -> Option<HICON> {
                 return Some(HICON(result as *mut _));
             }
         }
-        let h = GetClassLongPtrW(hwnd, GCLP_HICONSM);
+        let h = GetClassLongPtrW(hwnd, GCLP_HICON);
         if h != 0 {
             return Some(HICON(h as *mut _));
         }
-        let h = GetClassLongPtrW(hwnd, GCLP_HICON);
+        let h = GetClassLongPtrW(hwnd, GCLP_HICONSM);
         if h != 0 {
             return Some(HICON(h as *mut _));
         }
@@ -670,18 +672,22 @@ fn cached_exe_icon(cache: &mut HashMap<String, HICON>, exe: &str) -> Option<HICO
         return Some(*h);
     }
     unsafe {
-        let wide = util::WideStr::new(exe);
-        let mut sfi = SHFILEINFOW::default();
-        let ok = SHGetFileInfoW(
-            wide.pcwstr(),
-            FILE_ATTRIBUTE_NORMAL,
-            Some(&mut sfi),
-            std::mem::size_of::<SHFILEINFOW>() as u32,
-            SHGFI_ICON | SHGFI_LARGEICON,
-        );
-        if ok != 0 && !sfi.hIcon.is_invalid() {
-            cache.insert(exe.to_string(), sfi.hIcon);
-            return Some(sfi.hIcon);
+        // PrivateExtractIconsW wants a fixed MAX_PATH buffer; copy the path in,
+        // truncating defensively (PE exe paths are short).
+        let mut path = [0u16; 260];
+        for (dst, src) in path.iter_mut().zip(exe.encode_utf16()).take(259) {
+            *dst = src;
+        }
+        // Pull the best-matching image from the exe's icon group rather than the
+        // fixed 32px system "large" icon. PrivateExtractIconsW picks the closest
+        // size in the resource set for the requested dimension, so a high-DPI
+        // taskbar gets a 48/256px source instead of an upscaled 32px one.
+        let size = scaled(32).max(32);
+        let mut hicon = [HICON::default(); 1];
+        let n = PrivateExtractIconsW(&path, 0, size, size, Some(&mut hicon), None, 0);
+        if n > 0 && !hicon[0].is_invalid() {
+            cache.insert(exe.to_string(), hicon[0]);
+            return Some(hicon[0]);
         }
     }
     None
