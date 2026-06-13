@@ -355,17 +355,20 @@ impl IOleWindow_Impl for DesktopBrowser_Impl {
 
 #[allow(non_snake_case)]
 impl IShellBrowser_Impl for DesktopBrowser_Impl {
+    // The generic DefView negotiates its menu bar via these during
+    // CreateViewWindow; a host with no menu bar must return S_OK (reserving no
+    // space), not E_NOTIMPL — E_NOTIMPL makes CreateViewWindow fail (E_FAIL).
     fn InsertMenusSB(&self, _hmenushared: HMENU, _lpmenuwidths: *mut OLEMENUGROUPWIDTHS) -> Result<()> {
         blog("InsertMenusSB");
-        Err(E_NOTIMPL.into())
+        Ok(())
     }
     fn SetMenuSB(&self, _hmenushared: HMENU, _holemenures: isize, _hwndactiveobject: HWND) -> Result<()> {
         blog("SetMenuSB");
-        Err(E_NOTIMPL.into())
+        Ok(())
     }
     fn RemoveMenusSB(&self, _hmenushared: HMENU) -> Result<()> {
         blog("RemoveMenusSB");
-        Err(E_NOTIMPL.into())
+        Ok(())
     }
     fn SetStatusTextSB(&self, _pszstatustext: &PCWSTR) -> Result<()> {
         blog("SetStatusTextSB");
