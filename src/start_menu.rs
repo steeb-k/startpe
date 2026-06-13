@@ -288,13 +288,18 @@ pub fn toggle() {
                 m.showing_all = false;
                 rebuild(m);
             });
-            // Anchor above the taskbar with a gap, centered on the screen
-            // (Windows 11 style).
+            // Anchor above the taskbar with a gap. Centered taskbar → centered
+            // menu (Windows 11 style); left-aligned taskbar → flush bottom-left,
+            // matching the start button's left edge (Windows 10 / SAB style).
             let mut tb = RECT::default();
             let _ = GetWindowRect(taskbar, &mut tb);
             let y = tb.top - scaled(GAP) - height;
             let sw = GetSystemMetrics(SM_CXSCREEN);
-            let x = ((sw - width) / 2).clamp(scaled(8), (sw - width - scaled(8)).max(scaled(8)));
+            let x = if crate::taskbar::is_centered() {
+                ((sw - width) / 2).clamp(scaled(8), (sw - width - scaled(8)).max(scaled(8)))
+            } else {
+                scaled(8)
+            };
             let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height, SWP_SHOWWINDOW);
             let _ = SetForegroundWindow(hwnd);
         }

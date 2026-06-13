@@ -46,7 +46,7 @@ pub struct Config {
     /// Desktop / Public-Desktop shortcuts appear.
     pub show_system_desktop_icons: bool,
     /// Color of the Start button's four-square glyph (COLORREF 0x00BBGGRR).
-    /// Defaults to the same near-white as the taskbar text.
+    /// Defaults to the purple from the settings-pane swatches (RGB 180,90,230).
     pub start_button_color: u32,
     /// Dark-mode the shell-rendered menus created in our process (chiefly the
     /// hosted desktop's right-click context menu) via the uxtheme dark-mode
@@ -70,7 +70,7 @@ impl Default for Config {
             wallpaper: None,
             desktop_color: 0x0030_2820,
             show_system_desktop_icons: false,
-            start_button_color: 0x00F0_F0F0,
+            start_button_color: 0x00E6_5AB4,
             dark_menus: true,
         }
     }
