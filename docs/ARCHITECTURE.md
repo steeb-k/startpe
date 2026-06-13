@@ -72,14 +72,19 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   caret)
 - `src/peek.rs` — taskbar-button hover previews (DWM thumbnails where available,
   icon/title rows otherwise)
-- `src/menu.rs` — dark owner-drawn popup menus (`MF_OWNERDRAW` + forwarded
-  `WM_MEASUREITEM`/`WM_DRAWITEM`), since plain `HMENU`s can only be darkened via
-  undocumented uxtheme ordinals. Items can be entries, separators, or `MF_POPUP`
-  submenus (flyouts, drawn with a right-edge chevron). Used by the taskbar
-  right-click menu, the start menu's power flyout, and the Win+X power-user menu
-  (`taskbar::show_winx_menu`: a PE-trimmed Win11 power menu — system/admin tools,
-  Terminal at `%ComSpec%`, Run, the power flyout — opened by Win+X or by
-  right-clicking the start button)
+- `src/menu.rs` — dark, rounded, **custom-drawn** popup menus. A system
+  `TrackPopupMenu` can't get rounded corners without DWM (absent in PE) and its
+  owner-drawn separators still take mouse highlight, so each menu level is its
+  own `WS_POPUP` window with a rounded GDI region, painted dark with documented
+  GDI. It needs no activation: the root window takes the mouse capture (clicks
+  are routed by hit-testing screen coords against the open panels) and keyboard
+  nav arrives via a transient `WH_KEYBOARD_LL` hook — so it never dismisses the
+  window that opened it (the start menu hosts its power flyout this way). Items
+  are entries, separators (never selectable), or submenus (child window opened to
+  the right with a chevron). Used by the taskbar right-click menu, the start
+  menu's power flyout, and the Win+X power-user menu (`taskbar::show_winx_menu`:
+  a PE-trimmed Win11 power menu — system/admin tools, Terminal at `%ComSpec%`,
+  Run, the power flyout — opened by Win+X or by right-clicking the start button)
 - `src/run_dialog.rs` — the shell Run dialog done right: calls shell32's
   `RunFileDlg` (ordinal 61) directly with a proper icon + prompt (vs the
   iconless "RunDLL" box `rundll32 shell32.dll,#61` produces) and a one-shot
