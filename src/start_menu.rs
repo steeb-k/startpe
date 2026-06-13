@@ -6,6 +6,12 @@
 //! an "All Programs" row, and a live search box. Right pane: user picture
 //! (circular, protruding above the menu — done with a window region, no DWM
 //! required) and a column of system links. Footer: search + Shut down.
+//!
+//! Keyboard: typing always feeds the search (a caret marks the box). Arrow keys
+//! move a shared focus highlight (`hover`, reused by mouse and keyboard) across
+//! the program list, the right-pane links, and the power controls; Enter
+//! activates the focused item; Left/Right cross panes (list → Right → Right
+//! lands on the power flyout). See `navigate` / `resolve` / `perform`.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -15,7 +21,9 @@ use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Input::KeyboardAndMouse::{VK_BACK, VK_ESCAPE, VK_RETURN};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    VK_BACK, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_UP,
+};
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -284,9 +292,11 @@ pub fn toggle() {
                 m.stack.clear();
                 m.query.clear();
                 m.scroll = 0;
-                m.hover = Hit::None;
                 m.showing_all = false;
                 rebuild(m);
+                // Open with the first program focused, so the arrow keys and
+                // Enter work immediately (keyboard-first).
+                m.hover = first_focus(m);
             });
             // Anchor above the taskbar with a gap. Centered taskbar → centered
             // menu (Windows 11 style); left-aligned taskbar → flush bottom-left,
@@ -646,7 +656,10 @@ fn paint(m: &MenuState) {
         draw_footer(m, mem);
         draw_avatar(m, mem);
 
+        // Hide the caret across the blit so it isn't corrupted, then restore it.
+        let _ = HideCaret(m.hwnd);
         let _ = BitBlt(hdc, 0, 0, m.width, m.height, mem, 0, 0, SRCCOPY);
+        let _ = ShowCaret(m.hwnd);
         SelectObject(mem, old_bmp);
         let _ = DeleteObject(bmp);
         let _ = DeleteDC(mem);
@@ -1002,15 +1015,13 @@ fn exec(cmd: &str, args: &str) {
 }
 
 /// Restart / Shut down flyout for the chevron next to the Shut down button.
-fn shutdown_flyout(hwnd: HWND) {
-    let mut pt = POINT::default();
-    unsafe {
-        let _ = GetCursorPos(&mut pt);
-    }
+/// `(x, y)` is the screen anchor (the flyout is bottom-aligned above it), so the
+/// same call works whether opened by mouse or keyboard.
+fn shutdown_flyout(hwnd: HWND, x: i32, y: i32) {
     let cmd = crate::menu::track(
         hwnd,
-        pt.x,
-        pt.y,
+        x,
+        y,
         TPM_BOTTOMALIGN,
         &[(1, "Restart"), (2, "Shut down")],
     );
@@ -1027,6 +1038,267 @@ fn shutdown_flyout(hwnd: HWND) {
     }
 }
 
+/// What activating a `Hit` (by click or Enter) does. Resolved while holding the
+/// `MENU` borrow, then performed after it is dropped (launching pumps messages).
+enum Action {
+    None,
+    /// Folder/Back/All-apps navigation already applied to the state; just repaint.
+    Navigate,
+    Launch(PathBuf),
+    Exec(String, String),
+    RunDialog(HWND),
+    Shutdown,
+    /// Open the power flyout at this screen anchor.
+    ShutdownMenu(i32, i32),
+}
+
+/// Screen anchor (top-left of the Shut down button) for the power flyout.
+fn shutdown_anchor(m: &MenuState) -> (i32, i32) {
+    let mut wr = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(m.hwnd, &mut wr);
+    }
+    let sd = shutdown_rect(m);
+    (wr.left + sd.left, wr.top + sd.top)
+}
+
+/// Resolve the action for activating `hit`, mutating navigation state in place.
+fn resolve(m: &mut MenuState, hit: Hit) -> Action {
+    // Guard against a focus index left stale by a rebuild.
+    if let Hit::Row(i) = hit {
+        if i >= m.items.len() {
+            return Action::None;
+        }
+    }
+    if let Hit::Right(i) = hit {
+        if i >= m.rights.len() {
+            return Action::None;
+        }
+    }
+    match hit {
+        Hit::Row(i) => match &m.items[i].kind {
+            ItemKind::Back => {
+                m.stack.pop();
+                rebuild(m);
+                m.hover = first_focus(m);
+                Action::Navigate
+            }
+            ItemKind::Folder(p) => {
+                let p = p.clone();
+                m.stack.push(p);
+                rebuild(m);
+                m.hover = first_focus(m);
+                Action::Navigate
+            }
+            ItemKind::Launch(p) => Action::Launch(p.clone()),
+        },
+        Hit::AllPrograms => {
+            m.stack.clear();
+            m.query.clear();
+            if !m.pinned.is_empty() {
+                m.showing_all = !m.showing_all;
+            }
+            rebuild(m);
+            m.hover = first_focus(m);
+            Action::Navigate
+        }
+        Hit::Right(i) => {
+            let it = &m.rights[i];
+            if it.cmd == RUN_DIALOG_CMD {
+                Action::RunDialog(m.taskbar)
+            } else {
+                Action::Exec(it.cmd.clone(), it.args.clone())
+            }
+        }
+        Hit::Shutdown => Action::Shutdown,
+        Hit::ShutdownMenu => {
+            let (x, y) = shutdown_anchor(m);
+            Action::ShutdownMenu(x, y)
+        }
+        Hit::None => Action::None,
+    }
+}
+
+/// Carry out an `Action` (after the `MENU` borrow has been dropped).
+fn perform(hwnd: HWND, action: Action) {
+    match action {
+        Action::Navigate => unsafe {
+            let _ = InvalidateRect(hwnd, None, true);
+        },
+        Action::Launch(path) => {
+            hide(hwnd);
+            launch(&path);
+        }
+        Action::Exec(cmd, args) => {
+            hide(hwnd);
+            exec(&cmd, &args);
+        }
+        Action::RunDialog(taskbar) => {
+            hide(hwnd);
+            let mut rc = RECT::default();
+            unsafe {
+                let _ = GetWindowRect(taskbar, &mut rc);
+            }
+            crate::run_dialog::show(rc.top);
+        }
+        Action::Shutdown => {
+            hide(hwnd);
+            exec("wpeutil.exe", "shutdown");
+        }
+        Action::ShutdownMenu(x, y) => shutdown_flyout(hwnd, x, y),
+        Action::None => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard navigation
+
+#[derive(Clone, Copy)]
+enum Dir {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+/// The first focusable item in the left pane (the top program row, or the
+/// "All apps" row when the list is empty).
+fn first_focus(m: &MenuState) -> Hit {
+    if m.items.is_empty() {
+        Hit::AllPrograms
+    } else {
+        Hit::Row(0)
+    }
+}
+
+/// Scroll the left-pane list so row `i` is fully visible.
+fn scroll_into_view(m: &mut MenuState, i: usize) {
+    let row_h = scaled(ROW);
+    let lh = list_height(m);
+    let top = i as i32 * row_h;
+    let bottom = top + row_h;
+    if top < m.scroll {
+        m.scroll = top;
+    } else if bottom > m.scroll + lh {
+        m.scroll = bottom - lh;
+    }
+    m.scroll = m.scroll.clamp(0, max_scroll(m));
+}
+
+/// Move keyboard focus (the shared `hover` highlight). Regions left→right are:
+/// the program list (+ All apps), the right-pane links, and the power controls
+/// (Shut down, then its flyout chevron). Up/Down move within a region; Left/Right
+/// move between them — so from the list, Right→Right reaches the power flyout.
+fn navigate(m: &mut MenuState, dir: Dir) {
+    let n = m.items.len();
+    let r = m.rights.len();
+    let cur = m.hover;
+    let new = match (cur, dir) {
+        // Nothing focused yet: arrow into the natural region.
+        (Hit::None, Dir::Right) => {
+            if r > 0 {
+                Hit::Right(0)
+            } else {
+                Hit::ShutdownMenu
+            }
+        }
+        (Hit::None, _) => first_focus(m),
+
+        // Left pane (program rows + All apps), vertical.
+        (Hit::Row(i), Dir::Down) => {
+            if i + 1 < n {
+                Hit::Row(i + 1)
+            } else {
+                Hit::AllPrograms
+            }
+        }
+        (Hit::Row(i), Dir::Up) => Hit::Row(i.saturating_sub(1)),
+        (Hit::AllPrograms, Dir::Up) => {
+            if n > 0 {
+                Hit::Row(n - 1)
+            } else {
+                Hit::AllPrograms
+            }
+        }
+        // Left pane → right pane.
+        (Hit::Row(_) | Hit::AllPrograms, Dir::Right) => {
+            if r > 0 {
+                Hit::Right(0)
+            } else {
+                Hit::ShutdownMenu
+            }
+        }
+
+        // Right pane, vertical.
+        (Hit::Right(i), Dir::Down) => Hit::Right((i + 1).min(r.saturating_sub(1))),
+        (Hit::Right(i), Dir::Up) => Hit::Right(i.saturating_sub(1)),
+        // Right pane → list / power.
+        (Hit::Right(_), Dir::Left) => first_focus(m),
+        (Hit::Right(_), Dir::Right) => Hit::ShutdownMenu,
+
+        // Power controls.
+        (Hit::ShutdownMenu, Dir::Left) => Hit::Shutdown,
+        (Hit::Shutdown, Dir::Right) => Hit::ShutdownMenu,
+        (Hit::Shutdown, Dir::Left) => {
+            if r > 0 {
+                Hit::Right(0)
+            } else {
+                first_focus(m)
+            }
+        }
+        (Hit::Shutdown | Hit::ShutdownMenu, Dir::Up) => {
+            if r > 0 {
+                Hit::Right(r - 1)
+            } else {
+                first_focus(m)
+            }
+        }
+
+        // Anything else: stay put (e.g. Left from the list, Down from power).
+        _ => cur,
+    };
+    m.hover = new;
+    if let Hit::Row(i) = new {
+        scroll_into_view(m, i);
+    }
+}
+
+/// Place the blinking text caret just after the current search query inside the
+/// search box, signalling "type to search". Typing always feeds the search
+/// regardless of arrow-key focus, so the caret lives here whenever the menu has
+/// focus. No-op (harmless) if no caret is currently owned.
+fn position_caret(m: &MenuState) {
+    unsafe {
+        let sb = search_box_rect(m);
+        let text_left = sb.left + scaled(34);
+        let mut w = 0;
+        if !m.query.is_empty() {
+            let hdc = GetDC(m.hwnd);
+            let old = SelectObject(hdc, m.font_small);
+            let q: Vec<u16> = m.query.encode_utf16().collect();
+            let mut sz = SIZE::default();
+            let _ = GetTextExtentPoint32W(hdc, &q, &mut sz);
+            w = sz.cx;
+            SelectObject(hdc, old);
+            let _ = ReleaseDC(m.hwnd, hdc);
+        }
+        let h = scaled(16);
+        let y = (sb.top + sb.bottom) / 2 - h / 2;
+        let _ = SetCaretPos(text_left + w, y);
+    }
+}
+
+/// Map an arrow virtual-key to a navigation direction.
+fn arrow_dir(vk: u32) -> Option<Dir> {
+    match vk {
+        v if v == VK_UP.0 as u32 => Some(Dir::Up),
+        v if v == VK_DOWN.0 as u32 => Some(Dir::Down),
+        v if v == VK_LEFT.0 as u32 => Some(Dir::Left),
+        v if v == VK_RIGHT.0 as u32 => Some(Dir::Right),
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Window procedure
 
@@ -1036,6 +1308,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             if util::loword(wparam.0 as isize) == WA_INACTIVE as i32 {
                 hide(hwnd);
             }
+            LRESULT(0)
+        }
+        WM_SETFOCUS => {
+            // A blinking caret in the search box (the menu is type-to-search).
+            MENU.with_borrow(|m| {
+                if let Some(m) = m.as_ref() {
+                    let _ = CreateCaret(hwnd, HBITMAP::default(), scaled(1).max(1), scaled(16));
+                    position_caret(m);
+                    let _ = ShowCaret(hwnd);
+                }
+            });
+            LRESULT(0)
+        }
+        WM_KILLFOCUS => {
+            let _ = DestroyCaret();
             LRESULT(0)
         }
         WM_KEYDOWN => {
@@ -1049,28 +1336,39 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     } else {
                         m.query.clear();
                         rebuild(m);
+                        m.hover = first_focus(m);
                         true
                     }
                 });
                 if had_query {
+                    MENU.with_borrow(|m| {
+                        if let Some(m) = m.as_ref() {
+                            position_caret(m);
+                        }
+                    });
                     let _ = InvalidateRect(hwnd, None, true);
                 } else {
                     hide(hwnd);
                 }
             } else if vk == VK_RETURN.0 as u32 {
-                // Launch the first launchable item (top search result).
-                let target = MENU.with_borrow(|m| {
-                    m.as_ref().and_then(|m| {
-                        m.items.iter().find_map(|i| match &i.kind {
-                            ItemKind::Launch(p) => Some(p.clone()),
-                            _ => None,
-                        })
-                    })
+                // Activate the focused item; with nothing focused (e.g. just
+                // typed a search), fall back to the first launchable result.
+                let action = MENU.with_borrow_mut(|m| {
+                    let m = m.as_mut().unwrap();
+                    let hit = match m.hover {
+                        Hit::None => m
+                            .items
+                            .iter()
+                            .position(|i| matches!(i.kind, ItemKind::Launch(_)))
+                            .map_or(Hit::None, Hit::Row),
+                        h => h,
+                    };
+                    resolve(m, hit)
                 });
-                if let Some(path) = target {
-                    hide(hwnd);
-                    launch(&path);
-                }
+                perform(hwnd, action);
+            } else if let Some(dir) = arrow_dir(vk) {
+                MENU.with_borrow_mut(|m| navigate(m.as_mut().unwrap(), dir));
+                let _ = InvalidateRect(hwnd, None, false);
             }
             LRESULT(0)
         }
@@ -1078,23 +1376,27 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let c = wparam.0 as u32;
             let changed = MENU.with_borrow_mut(|m| {
                 let m = m.as_mut().unwrap();
-                if c == VK_BACK.0 as u32 {
-                    if m.query.pop().is_some() {
-                        rebuild(m);
-                        return true;
-                    }
-                    return false;
+                let edited = if c == VK_BACK.0 as u32 {
+                    m.query.pop().is_some()
+                } else if let Some(ch) = char::from_u32(c).filter(|ch| !ch.is_control()) {
+                    m.query.push(ch);
+                    true
+                } else {
+                    false
+                };
+                if edited {
+                    rebuild(m);
+                    // Keep focus on the top result so Enter launches it.
+                    m.hover = first_focus(m);
                 }
-                if let Some(ch) = char::from_u32(c) {
-                    if !ch.is_control() {
-                        m.query.push(ch);
-                        rebuild(m);
-                        return true;
-                    }
-                }
-                false
+                edited
             });
             if changed {
+                MENU.with_borrow(|m| {
+                    if let Some(m) = m.as_ref() {
+                        position_caret(m);
+                    }
+                });
                 let _ = InvalidateRect(hwnd, None, true);
             }
             LRESULT(0)
@@ -1126,82 +1428,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_LBUTTONUP => {
             let x = util::loword(lparam.0);
             let y = util::hiword(lparam.0);
-            enum Action {
-                None,
-                Navigate,
-                Launch(PathBuf),
-                Exec(String, String),
-                RunDialog(HWND),
-                Shutdown,
-                ShutdownMenu,
-            }
             // Resolve inside the borrow, act outside (launching pumps messages).
             let action = MENU.with_borrow_mut(|m| {
                 let m = m.as_mut().unwrap();
-                match hit_test(m, x, y) {
-                    Hit::Row(i) => match &m.items[i].kind {
-                        ItemKind::Back => {
-                            m.stack.pop();
-                            rebuild(m);
-                            Action::Navigate
-                        }
-                        ItemKind::Folder(p) => {
-                            let p = p.clone();
-                            m.stack.push(p);
-                            rebuild(m);
-                            Action::Navigate
-                        }
-                        ItemKind::Launch(p) => Action::Launch(p.clone()),
-                    },
-                    Hit::AllPrograms => {
-                        m.stack.clear();
-                        m.query.clear();
-                        // With pins, this row toggles pinned <-> all apps;
-                        // without pins it just refreshes the full list.
-                        if !m.pinned.is_empty() {
-                            m.showing_all = !m.showing_all;
-                        }
-                        rebuild(m);
-                        Action::Navigate
-                    }
-                    Hit::Right(i) => {
-                        let it = &m.rights[i];
-                        if it.cmd == RUN_DIALOG_CMD {
-                            Action::RunDialog(m.taskbar)
-                        } else {
-                            Action::Exec(it.cmd.clone(), it.args.clone())
-                        }
-                    }
-                    Hit::Shutdown => Action::Shutdown,
-                    Hit::ShutdownMenu => Action::ShutdownMenu,
-                    Hit::None => Action::None,
-                }
+                let hit = hit_test(m, x, y);
+                resolve(m, hit)
             });
-            match action {
-                Action::Navigate => {
-                    let _ = InvalidateRect(hwnd, None, true);
-                }
-                Action::Launch(path) => {
-                    hide(hwnd);
-                    launch(&path);
-                }
-                Action::Exec(cmd, args) => {
-                    hide(hwnd);
-                    exec(&cmd, &args);
-                }
-                Action::RunDialog(taskbar) => {
-                    hide(hwnd);
-                    let mut rc = RECT::default();
-                    let _ = GetWindowRect(taskbar, &mut rc);
-                    crate::run_dialog::show(rc.top);
-                }
-                Action::Shutdown => {
-                    hide(hwnd);
-                    exec("wpeutil.exe", "shutdown");
-                }
-                Action::ShutdownMenu => shutdown_flyout(hwnd),
-                Action::None => {}
-            }
+            perform(hwnd, action);
             LRESULT(0)
         }
         WM_MEASUREITEM => {

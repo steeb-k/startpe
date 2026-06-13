@@ -66,7 +66,9 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
 - `src/taskbar.rs` — appbar, task button list, painting, shell hook, clock,
   Explorer-taskbar suppression
 - `src/start_menu.rs` — start menu popup, Start Menu folder enumeration,
-  folder navigation, footer actions (Run / Cmd / Reboot / Shutdown)
+  folder navigation, footer actions (Run / Cmd / Reboot / Shutdown), and
+  keyboard navigation (arrow keys + Enter over a shared focus highlight; search
+  caret)
 - `src/peek.rs` — taskbar-button hover previews (DWM thumbnails where available,
   icon/title rows otherwise)
 - `src/menu.rs` — dark owner-drawn popup menus (`MF_OWNERDRAW` + forwarded
@@ -163,9 +165,12 @@ that is not implemented yet.
   jump-list-style context menus (close/restore/minimize).
 - **M3: start menu parity.** Pinned view (done — opens to the `PinUtil.ini`
   `StartMenu` pins with an All apps / Pinned toggle), search box (filter as you
-  type over the indexed shortcut list), right-pane links (Computer, Control
-  Panel, Downloads, Run), user picture, recent/frequent programs list, keyboard
-  navigation.
+  type over the indexed shortcut list, with a blinking caret), right-pane links
+  (Computer, Control Panel, Downloads, Run), user picture, keyboard navigation
+  (done — arrow keys move a shared focus highlight across the program list, the
+  right-pane links, and the power controls; Enter activates; Left/Right cross
+  panes so the list → Right → Right reaches the power flyout). Remaining:
+  recent/frequent programs list.
 - **M4: theming + StartIsBack config compatibility.** Win7/Win10/Win11 visual
   styles, orb bitmaps, transparency; read the `Software\StartIsBack` values
   the existing PEBakery scripts already write (`Start_ShowRun`,
