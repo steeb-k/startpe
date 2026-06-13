@@ -73,6 +73,11 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   `WM_MEASUREITEM`/`WM_DRAWITEM`), since plain `HMENU`s can only be darkened via
   undocumented uxtheme ordinals. Used by the taskbar right-click menu and the
   start menu's power flyout
+- `src/run_dialog.rs` — the shell Run dialog done right: calls shell32's
+  `RunFileDlg` (ordinal 61) directly with a proper icon + prompt (vs the
+  iconless "RunDLL" box `rundll32 shell32.dll,#61` produces) and a one-shot
+  `WH_CBT` hook to seat it bottom-left above the taskbar. Used by Win+R and the
+  start menu's Run… item
 - `src/darkmode.rs` — opt-out (`DarkMenus`, default on) dark mode for the
   *shell-rendered* menus our process raises (the hosted desktop context menu),
   via the undocumented uxtheme dark-mode ordinals. The one sanctioned

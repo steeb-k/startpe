@@ -1524,7 +1524,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         MSG_HOTKEY => {
             match wparam.0 as u32 {
-                HOTKEY_RUN => run("rundll32.exe", "shell32.dll,#61"),
+                HOTKEY_RUN => {
+                    // Use the taskbar's top edge to seat the dialog above it.
+                    let mut rc = RECT::default();
+                    let _ = GetWindowRect(hwnd, &mut rc);
+                    crate::run_dialog::show(hwnd, rc.top);
+                }
                 HOTKEY_EXPLORER => run("explorer.exe", "shell:MyComputerFolder"),
                 HOTKEY_DESKTOP => toggle_show_desktop(),
                 _ => {}

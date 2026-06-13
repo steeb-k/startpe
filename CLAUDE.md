@@ -15,12 +15,13 @@ updated when behavior or config values change.
 ## Hard constraints (do not violate)
 
 - **Documented Win32 APIs only — in `startpe.exe`.** No undocumented internals
- in the main binary. Two pragmatic, confined exceptions exist: (1) `tray.rs`,
- the `Shell_NotifyIcon` WM_COPYDATA wire format (de-facto stable, used by every
- alternative shell); (2) `darkmode.rs`, the uxtheme dark-mode ordinals used to
- dark-theme the shell context menu we host — build-gated, behind the `DarkMenus`
- config (default on), and fails closed to light menus. Keep any such ordinal
- work confined to `darkmode.rs`; do not scatter undocumented calls elsewhere.
+ in the main binary. Pragmatic, confined exceptions exist, each isolated to one
+ module: (1) `tray.rs`, the `Shell_NotifyIcon` WM_COPYDATA wire format (de-facto
+ stable, used by every alternative shell); (2) `darkmode.rs`, the uxtheme
+ dark-mode ordinals (build-gated, behind `DarkMenus`, fails closed to light
+ menus); (3) `run_dialog.rs`, shell32's `RunFileDlg` (ordinal 61) to pop the
+ real Run dialog with a proper icon/prompt. Keep any undocumented-ordinal work
+ confined to its module; do not scatter such calls elsewhere.
 - **`loader/` is the sandboxed exception.** `startpe_loader.dll` is loaded into
  `explorer.exe` (via a `Drive\shellex\FolderExtensions` COM registration) to
  keep Explorer's shell thread alive past the Win11 taskbar init on PE sources
@@ -54,7 +55,8 @@ updated when behavior or config values change.
   `peek.rs` (hover previews), `alttab.rs` (Win11-style Alt+Tab switcher: LL
   keyboard hook + `PrintWindow` screenshot grid), `menu.rs` (dark owner-drawn
   popup menus), `darkmode.rs` (uxtheme dark app mode for shell menus),
-  `config.rs` (registry), `util.rs` (UTF-16).
+  `run_dialog.rs` (shell Run dialog via RunFileDlg), `config.rs` (registry),
+  `util.rs` (UTF-16).
 - New user-facing settings: add to `config.rs` (registry value under
   `HKCU\Software\StartPE`), document in the `docs/ARCHITECTURE.md` table, and
   write the default in `pebakery/StartPE.script`. All three, every time.

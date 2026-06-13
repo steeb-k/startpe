@@ -16,6 +16,7 @@ mod darkmode;
 mod desktop;
 mod menu;
 mod peek;
+mod run_dialog;
 mod pins;
 mod start_menu;
 mod taskbar;
