@@ -19,6 +19,7 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::Controls::{
     DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_DISABLED, ODS_GRAYED, ODS_SELECTED, ODT_MENU,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::VK_DOWN;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::taskbar::{make_font, scaled, COL_ACTIVE, COL_BG, COL_TEXT, COL_TEXT_DIM};
@@ -49,12 +50,17 @@ fn menu_font() -> HFONT {
 ///
 /// `align` adds placement flags (e.g. `TPM_BOTTOMALIGN`); selection/return-mode
 /// flags are supplied internally. Blocks until the menu is dismissed.
+///
+/// When `select_first` is set, the first item is pre-highlighted (so a menu
+/// opened by keyboard has a default selection that Enter activates) by feeding
+/// the menu's modal loop a Down-arrow.
 pub fn track(
     owner: HWND,
     x: i32,
     y: i32,
     align: TRACK_POPUP_MENU_FLAGS,
     items: &[(u32, &str)],
+    select_first: bool,
 ) -> u32 {
     unsafe {
         let Ok(menu) = CreatePopupMenu() else {
@@ -87,6 +93,11 @@ pub fn track(
         // Required so the menu dismisses on an outside click even when the owner
         // is a WS_EX_NOACTIVATE appbar.
         let _ = SetForegroundWindow(owner);
+        if select_first {
+            // Queue a Down-arrow so the menu's modal loop highlights the first
+            // item on open (menu mode consumes the key for navigation).
+            let _ = PostMessageW(owner, WM_KEYDOWN, WPARAM(VK_DOWN.0 as usize), LPARAM(0));
+        }
         let cmd = TrackPopupMenu(
             menu,
             TPM_RETURNCMD | TPM_RIGHTBUTTON | align,
