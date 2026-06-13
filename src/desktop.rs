@@ -62,6 +62,47 @@ thread_local! {
     static DESKTOP: RefCell<Option<DesktopState>> = const { RefCell::new(None) };
 }
 
+/// TEMP diagnostics for the desktop-drag investigation.
+fn dlog(msg: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("X:\\startpe_desktop.log")
+    {
+        let _ = writeln!(f, "{msg}");
+    }
+}
+
+static SUBLOG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+unsafe fn window_class(hwnd: HWND) -> String {
+    let mut buf = [0u16; 128];
+    let n = GetClassNameW(hwnd, &mut buf);
+    String::from_utf16_lossy(&buf[..n.max(0) as usize])
+}
+
+/// Log the view window's class and its child window classes (to find the real
+/// list-view window, which may not be `SysListView32`).
+unsafe fn log_view_tree(view_hwnd: HWND) {
+    dlog(&format!(
+        "view_hwnd=0x{:X} class=[{}]",
+        view_hwnd.0 as usize,
+        window_class(view_hwnd)
+    ));
+    let mut after = HWND::default();
+    for _ in 0..16 {
+        let Ok(h) = FindWindowExW(view_hwnd, after, PCWSTR::null(), PCWSTR::null()) else {
+            break;
+        };
+        if h.is_invalid() {
+            break;
+        }
+        dlog(&format!("  child 0x{:X} class=[{}]", h.0 as usize, window_class(h)));
+        after = h;
+    }
+}
+
 /// Create a StartPE-owned desktop if appropriate. Returns `true` if StartPE now
 /// owns the desktop (so the caller should not wait on Explorer's shell).
 ///
@@ -227,6 +268,11 @@ unsafe fn public_desktop_view(parent: HWND) -> Option<IShellView> {
 /// Host the desktop icon view (`SHELLDLL_DefView`) as a child filling the desktop
 /// window. Best-effort: on failure we still have a wallpaper desktop.
 unsafe fn host_shell_view(parent: HWND, cfg: &Config) {
+    dlog(&format!(
+        "=== StartPE desktop v{} === show_system={}",
+        env!("CARGO_PKG_VERSION"),
+        cfg.show_system_desktop_icons
+    ));
     // Default: the Public Desktop folder (junction-free). ShowSystemDesktopIcons
     // hosts the full namespace desktop (with junctions). A `CreateViewObject`
     // view + FWF_DESKTOP works with our minimal browser; the generic
@@ -342,6 +388,9 @@ unsafe extern "system" fn list_subclass(
             };
             let item = SendMessageW(hwnd, LVM_HITTEST, WPARAM(0), LPARAM(&mut hti as *mut _ as isize))
                 .0 as i32;
+            if SUBLOG.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 5 {
+                dlog(&format!("subclass WM_LBUTTONDOWN hit item={item}"));
+            }
             DRAG.with_borrow_mut(|d| {
                 if item >= 0 {
                     let mut ip = POINT::default();
@@ -705,6 +754,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             // Once it appears, set the view flags (auto-arrange off / snap-to-grid
             // on) and remember the list for layout save/restore.
             if lv.is_invalid() {
+                if tick <= 3 {
+                    log_view_tree(view_hwnd);
+                }
                 if let Ok(found) = FindWindowExW(view_hwnd, None, w!("SysListView32"), None) {
                     if !found.is_invalid() {
                         lv = found;
@@ -713,7 +765,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         }
                         // Our own icon drag-move (the defview's OLE drop rejects
                         // intra-view repositioning).
-                        let _ = SetWindowSubclass(lv, Some(list_subclass), 1, 0);
+                        let ok = SetWindowSubclass(lv, Some(list_subclass), 1, 0);
+                        dlog(&format!(
+                            "found SysListView32 0x{:X}, SetWindowSubclass={}",
+                            lv.0 as usize,
+                            ok.as_bool()
+                        ));
                         DESKTOP.with_borrow_mut(|d| {
                             if let Some(d) = d {
                                 d.listview = lv;
