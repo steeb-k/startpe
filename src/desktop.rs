@@ -25,13 +25,13 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::Com::{CoTaskMemFree, IStream};
 use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
 use windows::Win32::System::Ole::{IOleWindow_Impl, OleInitialize, OLEMENUGROUPWIDTHS};
-use windows::Win32::UI::Controls::{LVITEMW, TBBUTTON};
+use windows::Win32::UI::Controls::{LVHITTESTINFO, LVITEMW, TBBUTTON};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    IFolderView2, IShellBrowser, IShellBrowser_Impl, IShellFolder, IShellView, SHBindToObject,
-    SHGetDesktopFolder, SHGetKnownFolderIDList, FOLDERID_PublicDesktop, FOLDERSETTINGS, FVM_ICON,
-    FWF_AUTOARRANGE, FWF_DESKTOP, FWF_NOCLIENTEDGE, FWF_NOSCROLL, FWF_SNAPTOGRID,
-    SVUIA_ACTIVATE_NOFOCUS,
+    DefSubclassProc, IFolderView2, IShellBrowser, IShellBrowser_Impl, IShellFolder, IShellView,
+    SetWindowSubclass, SHBindToObject, SHGetDesktopFolder, SHGetKnownFolderIDList,
+    FOLDERID_PublicDesktop, FOLDERSETTINGS, FVM_ICON, FWF_AUTOARRANGE, FWF_DESKTOP, FWF_NOCLIENTEDGE,
+    FWF_NOSCROLL, FWF_SNAPTOGRID, SVUIA_ACTIVATE_NOFOCUS,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -293,7 +293,139 @@ const TIMER_LAYOUT: usize = 1;
 const LVM_GETITEMCOUNT: u32 = 0x1004;
 const LVM_SETITEMPOSITION: u32 = 0x100F;
 const LVM_GETITEMPOSITION: u32 = 0x1010;
+const LVM_HITTEST: u32 = 0x1012;
+const LVM_GETITEMSPACING: u32 = 0x1033;
 const LVM_GETITEMTEXTW: u32 = 0x1073;
+
+/// Drag-to-reposition state for the subclassed desktop list. The defview's OLE
+/// drag rejects intra-view drops, so we move icons ourselves: swallow the item
+/// drag (preventing the defview's drag) and set the item position directly.
+struct DragState {
+    pending: bool,
+    dragging: bool,
+    item: i32,
+    start: POINT,
+    item_start: POINT,
+}
+
+thread_local! {
+    static DRAG: RefCell<DragState> = const {
+        RefCell::new(DragState {
+            pending: false,
+            dragging: false,
+            item: -1,
+            start: POINT { x: 0, y: 0 },
+            item_start: POINT { x: 0, y: 0 },
+        })
+    };
+}
+
+/// Subclass proc on the desktop `SysListView32` implementing icon drag-move.
+unsafe extern "system" fn list_subclass(
+    hwnd: HWND,
+    msg: u32,
+    wp: WPARAM,
+    lp: LPARAM,
+    _id: usize,
+    _ref: usize,
+) -> LRESULT {
+    const MK_LBUTTON: usize = 0x0001;
+    match msg {
+        WM_LBUTTONDOWN => {
+            let pt = POINT {
+                x: util::loword(lp.0),
+                y: util::hiword(lp.0),
+            };
+            let mut hti = LVHITTESTINFO {
+                pt,
+                ..Default::default()
+            };
+            let item = SendMessageW(hwnd, LVM_HITTEST, WPARAM(0), LPARAM(&mut hti as *mut _ as isize))
+                .0 as i32;
+            DRAG.with_borrow_mut(|d| {
+                if item >= 0 {
+                    let mut ip = POINT::default();
+                    SendMessageW(
+                        hwnd,
+                        LVM_GETITEMPOSITION,
+                        WPARAM(item as usize),
+                        LPARAM(&mut ip as *mut _ as isize),
+                    );
+                    *d = DragState {
+                        pending: true,
+                        dragging: false,
+                        item,
+                        start: pt,
+                        item_start: ip,
+                    };
+                } else {
+                    d.pending = false;
+                }
+            });
+            DefSubclassProc(hwnd, msg, wp, lp)
+        }
+        WM_MOUSEMOVE => {
+            let mv = DRAG.with_borrow_mut(|d| {
+                if !d.pending || wp.0 & MK_LBUTTON == 0 {
+                    return None; // not an item drag; let the list handle it
+                }
+                let (cx, cy) = (util::loword(lp.0), util::hiword(lp.0));
+                if !d.dragging {
+                    let th = GetSystemMetrics(SM_CXDRAG).max(2);
+                    if (cx - d.start.x).abs() >= th || (cy - d.start.y).abs() >= th {
+                        d.dragging = true;
+                    }
+                }
+                // Swallow all item-drag moves (prevents the defview's OLE drag);
+                // reposition live once past the drag threshold.
+                Some(if d.dragging {
+                    Some((d.item, d.item_start.x + (cx - d.start.x), d.item_start.y + (cy - d.start.y)))
+                } else {
+                    None
+                })
+            });
+            match mv {
+                Some(repos) => {
+                    if let Some((item, nx, ny)) = repos {
+                        set_item_pos(hwnd, item, nx, ny);
+                    }
+                    LRESULT(0)
+                }
+                None => DefSubclassProc(hwnd, msg, wp, lp),
+            }
+        }
+        WM_LBUTTONUP => {
+            let drop = DRAG.with_borrow_mut(|d| {
+                let r = if d.dragging {
+                    let (cx, cy) = (util::loword(lp.0), util::hiword(lp.0));
+                    Some((d.item, d.item_start.x + (cx - d.start.x), d.item_start.y + (cy - d.start.y)))
+                } else {
+                    None
+                };
+                d.pending = false;
+                d.dragging = false;
+                r
+            });
+            if let Some((item, nx, ny)) = drop {
+                let (sx, sy) = snap_to_grid(hwnd, nx, ny);
+                set_item_pos(hwnd, item, sx, sy);
+            }
+            DefSubclassProc(hwnd, msg, wp, lp)
+        }
+        _ => DefSubclassProc(hwnd, msg, wp, lp),
+    }
+}
+
+/// Round a position to the list's icon grid (so dropped icons stay aligned).
+unsafe fn snap_to_grid(lv: HWND, x: i32, y: i32) -> (i32, i32) {
+    let s = SendMessageW(lv, LVM_GETITEMSPACING, WPARAM(0), LPARAM(0)).0;
+    let cx = (s & 0xFFFF) as i32;
+    let cy = ((s >> 16) & 0xFFFF) as i32;
+    if cx <= 0 || cy <= 0 {
+        return (x, y);
+    }
+    (((x + cx / 2) / cx) * cx, ((y + cy / 2) / cy) * cy)
+}
 
 /// Path to the desktop-layout file next to `startpe.exe`. PE builds bake one in
 /// to define positions; StartPE rewrites it as icons move so it can be captured
@@ -579,6 +711,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         if let Some(v) = &view {
                             configure_view_flags(v);
                         }
+                        // Our own icon drag-move (the defview's OLE drop rejects
+                        // intra-view repositioning).
+                        let _ = SetWindowSubclass(lv, Some(list_subclass), 1, 0);
                         DESKTOP.with_borrow_mut(|d| {
                             if let Some(d) = d {
                                 d.listview = lv;
