@@ -95,6 +95,13 @@ RegWrite,HKLM,REG_DWORD,"Tmp_Software\Classes\Drive\shellex\FolderExtensions\%Lo
 // single-instance, so the loader launching it too is harmless.
 AddAutoRun,PostShell,NoWait,"StartPE","%PEPrograms%\%ProgramFolder%\%BinaryName%"
 
+// Stop WinRxCreator.au3 from relaunching Explorer when it exits. On this PE
+// Explorer's shell init fail-fasts and exits immediately, so the au3's
+// "keep the shell alive" monitor would relaunch it forever (CPU churn / stutter).
+// StartPE provides the shell surface, so suppress the relaunch. Requires the
+// matching guard in WinRxCreator.au3 (reads HKLM\Software\StartPE\SuppressShellRestart).
+RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","SuppressShellRestart",1
+
 // StartPE configuration (see docs/ARCHITECTURE.md for the value reference).
 // Written into the SOFTWARE hive (-> HKLM\Software\StartPE at runtime), NOT the
 // Default-user hive: PE runs the shell as SYSTEM, whose HKCU is the SYSTEM
@@ -195,7 +202,7 @@ WriteInterface,Value,%ScriptFile%,Interface,cb_TaskbarLabels,False
 WriteInterface,Value,%ScriptFile%,Interface,cb_TaskbarCombine,True
 WriteInterface,Value,%ScriptFile%,Interface,cb_CenterTaskbar,True
 WriteInterface,Value,%ScriptFile%,Interface,nb_MenuWidth,420
-WriteInterface,Value,%ScriptFile%,Interface,nb_MenuHeight,480
+WriteInterface,Value,%ScriptFile%,Interface,nb_MenuHeight,360
 System,Cursor,Normal
 
 [#ShowScriptInfo#]
