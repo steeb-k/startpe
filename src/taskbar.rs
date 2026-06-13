@@ -1005,7 +1005,9 @@ fn show_winx_menu(hwnd: HWND, select_first: bool) {
     let cmd = crate::menu::track_items(hwnd, x, y, TPM_BOTTOMALIGN, &items, select_first);
     match cmd {
         10 => run("eventvwr.exe", ""),
-        11 => run("msinfo32.exe", ""),
+        // "System" — the classic System Properties dialog (This PC ▸ Properties),
+        // since PE has no Settings app (and not every build ships msinfo32).
+        11 => run("control.exe", "sysdm.cpl"),
         12 => run("mmc.exe", "devmgmt.msc"),
         13 => run("mmc.exe", "diskmgmt.msc"),
         14 => run("mmc.exe", "compmgmt.msc"),
@@ -1674,20 +1676,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             });
             let _ = InvalidateRect(hwnd, None, false);
             LRESULT(0)
-        }
-        WM_MEASUREITEM => {
-            if crate::menu::on_measure(lparam) {
-                LRESULT(1)
-            } else {
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-        }
-        WM_DRAWITEM => {
-            if crate::menu::on_draw(lparam) {
-                LRESULT(1)
-            } else {
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
         }
         WM_PAINT => {
             STATE.with_borrow(|s| {

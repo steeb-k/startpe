@@ -1527,20 +1527,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             perform(hwnd, action);
             LRESULT(0)
         }
-        WM_MEASUREITEM => {
-            if crate::menu::on_measure(lparam) {
-                LRESULT(1)
-            } else {
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-        }
-        WM_DRAWITEM => {
-            if crate::menu::on_draw(lparam) {
-                LRESULT(1)
-            } else {
-                DefWindowProcW(hwnd, msg, wparam, lparam)
-            }
-        }
         WM_PAINT => {
             MENU.with_borrow(|m| {
                 if let Some(m) = m.as_ref() {

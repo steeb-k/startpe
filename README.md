@@ -74,13 +74,15 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the roadmap
   **Win+D** (show desktop), and **Win+X** (power-user menu) are handled directly
   (other Win combos pass through).
 - A Windows 11-style **power-user menu** (Win+X, or right-click the start button):
-  Event Viewer, System (msinfo32), Device Manager, Disk Management, Computer
-  Management, Terminal (the default `%ComSpec%` processor), Task Manager, File
-  Explorer, Run, a Shut down / Restart flyout, and Desktop — the PE-relevant
-  subset of the Windows 11 menu.
+  Event Viewer, System (System Properties), Device Manager, Disk Management,
+  Computer Management, Terminal (the default `%ComSpec%` processor), Task Manager,
+  File Explorer, Run, a Shut down / Restart flyout, and Desktop — the PE-relevant
+  subset of the Windows 11 menu. Drawn as a rounded, dark, custom popup (no DWM
+  required), with hover/keyboard navigation and a submenu flyout.
 
 ### Dark theming
-- Dark, owner-drawn popup menus (taskbar context menu, power flyout).
+- Dark, rounded, custom-drawn popup menus (taskbar context menu, power flyout,
+  Win+X menu) — rounded corners without DWM, correct separator behavior.
 - Dark-mode for the shell-rendered menus StartPE raises (chiefly the hosted
   desktop's right-click menu) via uxtheme app mode (`DarkMenus`, opt-out).
 
