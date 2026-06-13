@@ -49,8 +49,8 @@ updated when behavior or config values change.
   hook, Explorer suppression), `start_menu.rs` (two-pane menu, search),
   `tray.rs` (Shell_TrayWnd host, icon registrations, click forwarding),
   `peek.rs` (hover previews), `alttab.rs` (Win11-style Alt+Tab switcher: LL
-  keyboard hook + `PrintWindow` screenshot grid), `config.rs` (registry),
-  `util.rs` (UTF-16).
+  keyboard hook + `PrintWindow` screenshot grid), `menu.rs` (dark owner-drawn
+  popup menus), `config.rs` (registry), `util.rs` (UTF-16).
 - New user-facing settings: add to `config.rs` (registry value under
   `HKCU\Software\StartPE`), document in the `docs/ARCHITECTURE.md` table, and
   write the default in `pebakery/StartPE.script`. All three, every time.

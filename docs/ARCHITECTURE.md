@@ -69,6 +69,10 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   folder navigation, footer actions (Run / Cmd / Reboot / Shutdown)
 - `src/peek.rs` — taskbar-button hover previews (DWM thumbnails where available,
   icon/title rows otherwise)
+- `src/menu.rs` — dark owner-drawn popup menus (`MF_OWNERDRAW` + forwarded
+  `WM_MEASUREITEM`/`WM_DRAWITEM`), since plain `HMENU`s can only be darkened via
+  the forbidden undocumented uxtheme ordinals. Used by the taskbar right-click
+  menu and the start menu's power flyout
 - `src/alttab.rs` — Windows 11–style Alt+Tab switcher. A `WH_KEYBOARD_LL` hook
   captures Alt+Tab before the system switcher fires and drives a centered,
   rounded overlay: one tile per top-level window (app icon + title + a

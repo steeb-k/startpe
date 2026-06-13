@@ -13,6 +13,7 @@
 mod alttab;
 mod config;
 mod desktop;
+mod menu;
 mod peek;
 mod pins;
 mod start_menu;
