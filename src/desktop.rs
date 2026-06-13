@@ -213,52 +213,62 @@ unsafe fn host_shell_view(parent: HWND, cfg: &Config) {
         "host_shell_view show_system={}",
         cfg.show_system_desktop_icons
     ));
-    let view: IShellView = if cfg.show_system_desktop_icons {
-        match full_desktop_view(parent) {
-            Some(v) => v,
-            None => {
-                dlog("full_desktop_view (show_system) -> None");
-                return;
-            }
-        }
-    } else {
-        match crate::desktop_filter::create_filtered_desktop_view() {
-            Some(v) => v,
-            None => {
-                dlog("create_filtered -> None, falling back to full");
-                match full_desktop_view(parent) {
-                    Some(v) => v,
-                    None => {
-                        dlog("full_desktop_view fallback -> None");
-                        return;
-                    }
-                }
-            }
-        }
-    };
 
     let mut rc = RECT::default();
     let _ = GetClientRect(parent, &mut rc);
+    let browser: IShellBrowser = DesktopBrowser { hwnd: parent }.into();
 
-    let fs = FOLDERSETTINGS {
+    let fs_desktop = FOLDERSETTINGS {
         ViewMode: FVM_ICON.0 as u32,
         fFlags: (FWF_DESKTOP | FWF_NOCLIENTEDGE | FWF_NOSCROLL).0 as u32,
     };
-
-    // Hand the view a minimal host browser. The desktop `SHELLDLL_DefView`
-    // calls back into the browser (for its parent window, status text, etc.);
-    // without one it creates no icon list. A NULL browser left the view empty.
-    let browser: IShellBrowser = DesktopBrowser { hwnd: parent }.into();
-    let view_hwnd = match view.CreateViewWindow(None, &fs, &browser, &rc) {
-        Ok(h) => {
-            dlog(&format!("CreateViewWindow OK hwnd=0x{:X}", h.0 as usize));
-            h
-        }
-        Err(e) => {
-            dlog(&format!("CreateViewWindow ERR {e:?}"));
-            return;
-        }
+    // Plain icon view (no FWF_DESKTOP). FWF_DESKTOP appears to be special to the
+    // real desktop folder's own view and makes CreateViewWindow fail (E_FAIL) on
+    // a generic DefView; the plain view needs a manually transparent list so the
+    // wallpaper shows through.
+    let fs_plain = FOLDERSETTINGS {
+        ViewMode: FVM_ICON.0 as u32,
+        fFlags: (FWF_NOCLIENTEDGE | FWF_NOSCROLL).0 as u32,
     };
+
+    // Try, in order, until CreateViewWindow succeeds: (1) filtered desktop
+    // (junction-free) with FWF_DESKTOP, (2) filtered desktop plain + manual
+    // transparency, (3) full namespace desktop with FWF_DESKTOP (junctions show).
+    // `make_transparent` marks the case that needs the list made transparent.
+    let mut chosen: Option<(IShellView, HWND, bool)> = None;
+
+    if !cfg.show_system_desktop_icons {
+        if chosen.is_none() {
+            if let Some(v) = crate::desktop_filter::create_filtered_desktop_view() {
+                if let Some(h) = try_view_window(&v, &fs_desktop, &browser, &rc, "filtered+desktop") {
+                    chosen = Some((v, h, false));
+                }
+            }
+        }
+        if chosen.is_none() {
+            if let Some(v) = crate::desktop_filter::create_filtered_desktop_view() {
+                if let Some(h) = try_view_window(&v, &fs_plain, &browser, &rc, "filtered+plain") {
+                    chosen = Some((v, h, true));
+                }
+            }
+        }
+    }
+    if chosen.is_none() {
+        if let Some(v) = full_desktop_view(parent) {
+            if let Some(h) = try_view_window(&v, &fs_desktop, &browser, &rc, "full+desktop") {
+                chosen = Some((v, h, false));
+            }
+        }
+    }
+
+    let Some((view, view_hwnd, make_transparent)) = chosen else {
+        dlog("no desktop view succeeded");
+        return;
+    };
+
+    if make_transparent {
+        make_listview_transparent(view_hwnd);
+    }
     let _ = view.UIActivate(SVUIA_ACTIVATE_NOFOCUS.0 as u32);
     let _ = ShowWindow(view_hwnd, SW_SHOW);
 
@@ -269,6 +279,48 @@ unsafe fn host_shell_view(parent: HWND, cfg: &Config) {
             d._browser = Some(browser);
         }
     });
+}
+
+/// Try `IShellView::CreateViewWindow`; log and return the view-window handle.
+unsafe fn try_view_window(
+    view: &IShellView,
+    fs: &FOLDERSETTINGS,
+    browser: &IShellBrowser,
+    rc: &RECT,
+    label: &str,
+) -> Option<HWND> {
+    match view.CreateViewWindow(None, fs, browser, rc) {
+        Ok(h) => {
+            crate::desktop_filter::dlog(&format!(
+                "{label}: CreateViewWindow OK hwnd=0x{:X}",
+                h.0 as usize
+            ));
+            Some(h)
+        }
+        Err(e) => {
+            crate::desktop_filter::dlog(&format!("{label}: CreateViewWindow ERR {e:?}"));
+            None
+        }
+    }
+}
+
+/// Make the desktop list (the `SysListView32` inside `SHELLDLL_DefView`)
+/// transparent so the wallpaper shows through when we can't use FWF_DESKTOP.
+unsafe fn make_listview_transparent(defview: HWND) {
+    const LVM_SETEXTENDEDLISTVIEWSTYLE: u32 = 0x1036;
+    const LVS_EX_TRANSPARENTBKGND: usize = 0x0040_0000;
+    const LVS_EX_TRANSPARENTSHADOWTEXT: usize = 0x0080_0000;
+    if let Ok(lv) = FindWindowExW(defview, None, w!("SysListView32"), None) {
+        if !lv.is_invalid() {
+            let mask = LVS_EX_TRANSPARENTBKGND | LVS_EX_TRANSPARENTSHADOWTEXT;
+            SendMessageW(
+                lv,
+                LVM_SETEXTENDEDLISTVIEWSTYLE,
+                WPARAM(mask),
+                LPARAM(mask as isize),
+            );
+        }
+    }
 }
 
 /// Minimal `IShellBrowser` host for the desktop's `SHELLDLL_DefView`. The view
