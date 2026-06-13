@@ -155,6 +155,11 @@ RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","DesktopColor",3158560
 // shortcuts show), 1 = show them.
 RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","ShowSystemDesktopIcons",0
 
+// Desktop icon layout: positions are stored as x,y,Name lines in
+// desktop-layout.txt next to startpe.exe. StartPE writes it as you arrange
+// icons; drop the captured file next to this script to bake those positions in.
+If,ExistFile,"%ScriptDir%\desktop-layout.txt",FileCopy,"%ScriptDir%\desktop-layout.txt","%TargetPrograms%\%ProgramFolder%\desktop-layout.txt"
+
 // Quiet down the Win11 taskbar Explorer would otherwise populate.
 // (StartPE hides the window itself; these just avoid wasted work at logon.)
 RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\Microsoft\Windows\CurrentVersion\Search","SearchboxTaskbarMode",0
