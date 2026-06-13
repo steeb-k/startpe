@@ -96,7 +96,14 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
 - `src/pins.rs` — reads the winrx-creator/PhoenixPE `PinUtil.ini` staging file
   (`%Windir%\System32\PinUtil.ini`, `[PinUtil]` `Taskbar<n>`/`StartMenu<n>` =
   exe path) so StartPE can render pinned taskbar/start-menu items
-- `src/config.rs` — registry-backed configuration (`HKCU\Software\StartPE`)
+- `src/settings.rs` — the settings pane: a dark owner-drawn GDI window of the
+  boolean config switches, grouped by surface (Taskbar / Desktop / Menus), opened
+  from the taskbar's right-click menu. Toggling a row writes the value to
+  `HKCU\Software\StartPE` (see `config::save_*`) and calls `taskbar::reload_config`
+  so layout switches apply live; switches needing the windows recreated take
+  effect on the next launch
+- `src/config.rs` — registry-backed configuration (read from `HKLM` then `HKCU`;
+  the settings pane writes runtime changes to `HKCU`)
 - `src/util.rs` — UTF-16 helpers, LOWORD/HIWORD
 - `loader/src/lib.rs` — `startpe_loader.dll`, the Explorer-side shim (see below)
 

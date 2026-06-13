@@ -55,11 +55,14 @@ updated when behavior or config values change.
   `peek.rs` (hover previews), `alttab.rs` (Win11-style Alt+Tab switcher: LL
   keyboard hook + `PrintWindow` screenshot grid), `menu.rs` (dark owner-drawn
   popup menus), `darkmode.rs` (uxtheme dark app mode for shell menus),
-  `run_dialog.rs` (shell Run dialog via RunFileDlg), `config.rs` (registry),
-  `util.rs` (UTF-16).
+  `run_dialog.rs` (shell Run dialog via RunFileDlg), `settings.rs` (dark
+  settings pane for the boolean config switches, opened from the taskbar menu),
+  `config.rs` (registry), `util.rs` (UTF-16).
 - New user-facing settings: add to `config.rs` (registry value under
   `HKCU\Software\StartPE`), document in the `docs/ARCHITECTURE.md` table, and
-  write the default in `pebakery/StartPE.script`. All three, every time.
+  write the default in `pebakery/StartPE.script`. All three, every time. If the
+  setting is a simple on/off, also add it to the `TOGGLES` table in
+  `settings.rs` so it shows up in the settings pane.
 - License headers: `// SPDX-License-Identifier: GPL-3.0-or-later` on new files.
 
 ## Build & test
