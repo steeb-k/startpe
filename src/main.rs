@@ -18,6 +18,7 @@ mod menu;
 mod peek;
 mod run_dialog;
 mod pins;
+mod settings;
 mod start_menu;
 mod taskbar;
 mod tray;

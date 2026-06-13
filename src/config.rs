@@ -139,3 +139,21 @@ impl Config {
         }
     }
 }
+
+/// Persist a single boolean setting (as a `REG_DWORD` 0/1).
+pub fn save_bool(name: &str, value: bool) {
+    save_u32(name, value as u32);
+}
+
+/// Persist a single `REG_DWORD` setting under `HKCU\Software\StartPE`.
+///
+/// Runtime changes from the settings UI always write to `HKCU`: it is the
+/// highest-priority overlay in [`Config::load`], so it wins on the next load in
+/// both a per-user install and a PE image (where the shell runs as `SYSTEM` and
+/// `HKCU` is the SYSTEM profile — still live and writable for the session). The
+/// offline build-time defaults stay in `HKLM`; this never touches them.
+pub fn save_u32(name: &str, value: u32) {
+    if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(KEY) {
+        let _ = key.set_value(name, &value);
+    }
+}

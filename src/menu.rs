@@ -43,6 +43,10 @@ fn menu_font() -> HFONT {
 /// Build a dark owner-drawn popup menu of `(command_id, label)` items, show it at
 /// screen `(x, y)`, and return the chosen command id (0 if dismissed).
 ///
+/// An item with an empty label is rendered as a (dark, owner-drawn) separator —
+/// a plain `MF_SEPARATOR` would draw in the system's light menu colors. Give
+/// separators command id 0; they're disabled and can't be returned.
+///
 /// `align` adds placement flags (e.g. `TPM_BOTTOMALIGN`); selection/return-mode
 /// flags are supplied internally. Blocks until the menu is dismissed.
 pub fn track(
@@ -59,8 +63,15 @@ pub fn track(
         // Label buffers must outlive TrackPopupMenu (which reads them back as
         // item data while painting). The call is synchronous, so locals suffice.
         let labels: Vec<Vec<u16>> = items.iter().map(|(_, t)| util::wide(t)).collect();
-        for ((id, _), label) in items.iter().zip(labels.iter()) {
-            let _ = AppendMenuW(menu, MF_OWNERDRAW, *id as usize, PCWSTR(label.as_ptr()));
+        for ((id, text), label) in items.iter().zip(labels.iter()) {
+            // Separators (empty label) are still owner-drawn — so they stay dark —
+            // but disabled so they can't be hovered or returned.
+            let flags = if text.is_empty() {
+                MF_OWNERDRAW | MF_DISABLED
+            } else {
+                MF_OWNERDRAW
+            };
+            let _ = AppendMenuW(menu, flags, *id as usize, PCWSTR(label.as_ptr()));
         }
 
         // Dark margin/gutter behind the (owner-drawn) items.
@@ -113,12 +124,16 @@ pub fn on_measure(lparam: LPARAM) -> bool {
             return false;
         }
         let text = item_text(mis.itemData as *const u16);
+        if text.is_empty() {
+            // Separator: a short, narrow row (the divider line is drawn centered).
+            mis.itemWidth = scaled(40) as u32;
+            mis.itemHeight = scaled(7) as u32;
+            return true;
+        }
         let mut sz = SIZE::default();
         let hdc = GetDC(None);
         let old = SelectObject(hdc, HGDIOBJ(menu_font().0));
-        if !text.is_empty() {
-            let _ = GetTextExtentPoint32W(hdc, &text, &mut sz);
-        }
+        let _ = GetTextExtentPoint32W(hdc, &text, &mut sz);
         SelectObject(hdc, old);
         ReleaseDC(None, hdc);
         // Leave room for the (empty) check-mark gutter on the left + padding.
@@ -145,7 +160,21 @@ pub fn on_draw(lparam: LPARAM) -> bool {
         let _ = DeleteObject(HGDIOBJ(bg.0));
 
         let mut text = item_text(dis.itemData as *const u16);
-        if !text.is_empty() {
+        if text.is_empty() {
+            // Separator: a single hairline across the middle, inset from the edges.
+            let line = CreateSolidBrush(COLORREF(COL_TEXT_DIM));
+            let y = (rc.top + rc.bottom) / 2;
+            let bar = RECT {
+                left: rc.left + scaled(12),
+                top: y,
+                right: rc.right - scaled(12),
+                bottom: y + 1,
+            };
+            FillRect(hdc, &bar, line);
+            let _ = DeleteObject(HGDIOBJ(line.0));
+            return true;
+        }
+        {
             SetBkMode(hdc, TRANSPARENT);
             SetTextColor(hdc, COLORREF(if disabled { COL_TEXT_DIM } else { COL_TEXT }));
             let old = SelectObject(hdc, HGDIOBJ(menu_font().0));

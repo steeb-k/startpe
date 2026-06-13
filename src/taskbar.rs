@@ -946,12 +946,39 @@ fn show_taskbar_menu(hwnd: HWND) {
         pt.x,
         pt.y,
         TRACK_POPUP_MENU_FLAGS(0),
-        &[(1, "Task Manager"), (2, "Computer Management")],
+        &[
+            (1, "Task Manager"),
+            (2, "Computer Management"),
+            (0, ""), // separator: StartPE's own settings live below
+            (3, "Settings"),
+        ],
     );
     match cmd {
         1 => run("taskmgr.exe", ""),
         2 => run("mmc.exe", "compmgmt.msc"),
+        3 => crate::settings::open(),
         _ => {}
+    }
+}
+
+/// Re-read the registry config and apply the changes that can take effect live
+/// (button combining, labels, centering — all recomputed in `refresh_buttons`).
+/// Called by the settings pane after it writes a value. Settings that need the
+/// windows recreated (the hosted desktop, dark-menu app mode) are persisted for
+/// the next launch but not re-applied here.
+pub fn reload_config() {
+    let cfg = Config::load();
+    let hwnd = STATE.with_borrow_mut(|s| {
+        s.as_mut().map(|s| {
+            s.cfg = cfg;
+            refresh_buttons(s);
+            s.hwnd
+        })
+    });
+    if let Some(hwnd) = hwnd {
+        unsafe {
+            let _ = InvalidateRect(hwnd, None, false);
+        }
     }
 }
 
