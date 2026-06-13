@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 [package]
 name = "startpe_loader"
-version = "0.1.21"
+version = "0.1.22"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Explorer-side loader shim for StartPE in Windows PE: keeps Explorer's shell thread alive past the Win11 taskbar init and launches startpe.exe"
