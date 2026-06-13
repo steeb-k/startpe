@@ -19,13 +19,13 @@
 use core::ffi::c_void;
 use std::cell::RefCell;
 
-use windows::core::{implement, w, Result, PCWSTR};
+use windows::core::{implement, w, Result, PCWSTR, PWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, IStream, COINIT_APARTMENTTHREADED};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
 use windows::Win32::System::Ole::{IOleWindow_Impl, OLEMENUGROUPWIDTHS};
-use windows::Win32::UI::Controls::TBBUTTON;
+use windows::Win32::UI::Controls::{LVITEMW, TBBUTTON};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
     IShellBrowser, IShellBrowser_Impl, IShellFolder, IShellView, SHBindToObject,
@@ -49,9 +49,12 @@ struct DesktopState {
     _browser: Option<IShellBrowser>,
     /// The `SHELLDLL_DefView` child window, resized to track the desktop.
     view_hwnd: HWND,
-    /// The desktop `SysListView32` (icon list), for layout save/restore (next).
-    #[allow(dead_code)]
+    /// The desktop `SysListView32` (icon list), for layout save/restore.
     listview: HWND,
+    /// Layout-timer ticks (first few apply the saved layout, then we capture).
+    ticks: u32,
+    /// Last captured layout text, to avoid rewriting the file unchanged.
+    last_layout: String,
 }
 
 thread_local! {
@@ -140,6 +143,8 @@ unsafe fn create(cfg: &Config) -> Result<()> {
             _browser: None,
             view_hwnd: HWND::default(),
             listview: HWND::default(),
+            ticks: 0,
+            last_layout: String::new(),
         })
     });
 
@@ -262,6 +267,103 @@ unsafe fn host_shell_view(parent: HWND, cfg: &Config) {
             d._browser = Some(browser);
         }
     });
+
+    // Drive layout apply (first ticks) then capture (every tick after) on a 1s
+    // timer; icons load asynchronously so we apply a few times.
+    if !listview.is_invalid() {
+        let _ = SetTimer(parent, TIMER_LAYOUT, 1000, None);
+    }
+}
+
+const TIMER_LAYOUT: usize = 1;
+
+const LVM_GETITEMCOUNT: u32 = 0x1004;
+const LVM_SETITEMPOSITION: u32 = 0x100F;
+const LVM_GETITEMPOSITION: u32 = 0x1010;
+const LVM_GETITEMTEXTW: u32 = 0x1073;
+
+/// Path to the desktop-layout file next to `startpe.exe`. PE builds bake one in
+/// to define positions; StartPE rewrites it as icons move so it can be captured
+/// and re-baked.
+fn layout_path() -> Option<String> {
+    let mut buf = [0u16; 520];
+    let n = unsafe { GetModuleFileNameW(None, &mut buf) };
+    if n == 0 {
+        return None;
+    }
+    let full = String::from_utf16_lossy(&buf[..n as usize]);
+    let pos = full.rfind('\\')?;
+    Some(format!("{}desktop-layout.txt", &full[..=pos]))
+}
+
+unsafe fn list_item_count(lv: HWND) -> i32 {
+    SendMessageW(lv, LVM_GETITEMCOUNT, WPARAM(0), LPARAM(0)).0 as i32
+}
+
+unsafe fn list_item_text(lv: HWND, i: i32) -> String {
+    let mut buf = [0u16; 260];
+    let mut it = LVITEMW {
+        iSubItem: 0,
+        pszText: PWSTR(buf.as_mut_ptr()),
+        cchTextMax: buf.len() as i32,
+        ..Default::default()
+    };
+    let n = SendMessageW(
+        lv,
+        LVM_GETITEMTEXTW,
+        WPARAM(i as usize),
+        LPARAM(&mut it as *mut _ as isize),
+    )
+    .0
+    .max(0) as usize;
+    String::from_utf16_lossy(&buf[..n.min(buf.len())])
+}
+
+unsafe fn list_item_pos(lv: HWND, i: i32) -> (i32, i32) {
+    let mut p = POINT::default();
+    let _ = SendMessageW(
+        lv,
+        LVM_GETITEMPOSITION,
+        WPARAM(i as usize),
+        LPARAM(&mut p as *mut _ as isize),
+    );
+    (p.x, p.y)
+}
+
+unsafe fn set_item_pos(lv: HWND, i: i32, x: i32, y: i32) {
+    let lp = ((x & 0xFFFF) | ((y & 0xFFFF) << 16)) as isize;
+    let _ = SendMessageW(lv, LVM_SETITEMPOSITION, WPARAM(i as usize), LPARAM(lp));
+}
+
+/// Serialize the current desktop icon positions as `x,y,Name` lines.
+unsafe fn capture_layout(lv: HWND) -> String {
+    let mut out = String::new();
+    for i in 0..list_item_count(lv) {
+        let (x, y) = list_item_pos(lv, i);
+        out.push_str(&format!("{x},{y},{}\n", list_item_text(lv, i)));
+    }
+    out
+}
+
+/// Apply saved `x,y,Name` positions to matching desktop icons.
+unsafe fn apply_layout(lv: HWND, text: &str) {
+    let count = list_item_count(lv);
+    for line in text.lines() {
+        let line = line.trim_end_matches(['\r', '\n']);
+        let mut parts = line.splitn(3, ',');
+        let (Some(xs), Some(ys), Some(name)) = (parts.next(), parts.next(), parts.next()) else {
+            continue;
+        };
+        let (Ok(x), Ok(y)) = (xs.trim().parse::<i32>(), ys.trim().parse::<i32>()) else {
+            continue;
+        };
+        for i in 0..count {
+            if list_item_text(lv, i).eq_ignore_ascii_case(name) {
+                set_item_pos(lv, i, x, y);
+                break;
+            }
+        }
+    }
 }
 
 /// Configure the desktop `SysListView32` for free, tidy positioning: auto-arrange
@@ -458,6 +560,39 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     }
                 }
             });
+            LRESULT(0)
+        }
+        WM_TIMER if wp.0 == TIMER_LAYOUT => {
+            // Resolve state, then act outside the borrow (file I/O + list msgs).
+            let (tick, lv, last) = DESKTOP.with_borrow_mut(|d| match d {
+                Some(d) => {
+                    d.ticks += 1;
+                    (d.ticks, d.listview, d.last_layout.clone())
+                }
+                None => (0, HWND::default(), String::new()),
+            });
+            if !lv.is_invalid() {
+                if tick <= 3 {
+                    // Items load asynchronously; apply the saved layout a few times.
+                    if let Some(p) = layout_path() {
+                        if let Ok(text) = std::fs::read_to_string(&p) {
+                            apply_layout(lv, &text);
+                        }
+                    }
+                } else {
+                    let cur = capture_layout(lv);
+                    if cur != last {
+                        if let Some(p) = layout_path() {
+                            let _ = std::fs::write(&p, &cur);
+                        }
+                        DESKTOP.with_borrow_mut(|d| {
+                            if let Some(d) = d {
+                                d.last_layout = cur;
+                            }
+                        });
+                    }
+                }
+            }
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wp, lp),
