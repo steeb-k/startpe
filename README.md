@@ -1,19 +1,15 @@
 # StartPE
 
-A free, open-source (GPLv3) **taskbar, start menu, and desktop for Windows PE** —
-a drop-in replacement for StartAllBack in PEBakery-based builds (PhoenixPE,
-winrx-creator, and friends), with no license nag and, for the main binary, no
-dependence on undocumented Explorer internals.
+A free, open-source (GPLv3) **taskbar, start menu, and desktop for Windows PE**.
 
 StartPE runs *alongside* Explorer instead of injecting into it: it draws its own
 taskbar/start menu/desktop with plain GDI and documented Win32, and hides
 Explorer's own taskbar. That makes it small (single ~370 KB `startpe.exe`, no
-runtime dependencies) and resilient to Windows updates, where StartAllBack-style
-in-process taskbar replacement is not.
+runtime dependencies).
 
 ## Status
 
-**Usable.** StartPE works as a StartAllBack alternative for PE environments.
+**Usable.** StartPE is an open source alternative to StartAllBack for PE environments.
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the roadmap
 (theming, a clock calendar flyout, and more customization).
 
@@ -34,11 +30,11 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the roadmap
   and a locale-formatted clock with date.
 - **Pinned apps** from the winrx-creator/PhoenixPE `PinUtil.ini` — shown even
   when not running, and launched on click.
-- High-resolution app icons (not upscaled 16px), cloaked/phantom UWP hosts
+- High-resolution app icons, cloaked/phantom UWP hosts
   filtered out, UWP windows grouped and icon'd via their real app process.
 
 ### Start menu
-- Two-pane classic Win7/StartAllBack layout with rounded corners (window region,
+- Two-pane classic Win7/Win10 layout with rounded corners (window region,
   no DWM needed), floating above the taskbar; follows the taskbar's alignment
   (centered, or bottom-left when the taskbar is left-aligned).
 - Left pane: apps from the Start Menu folders (`%ProgramData%` + `%APPDATA%`)
@@ -126,8 +122,7 @@ differs between full Windows (DWM, UWP windows) and PE (neither).
 
 `pebakery/StartPE.script` copies the binary into the image and writes the launch
 and configuration registry values into the mounted SOFTWARE hive at build time.
-It's modeled on the PhoenixPE StartAllBack script's structure so it can sit
-alongside your existing scripts.
+It's modeled on PhoenixPE scripts but can be modified to work in any PEBakery build.
 
 ## License
 
