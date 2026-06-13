@@ -6,16 +6,21 @@
 //! menu itself instead: each menu level is a small `WS_POPUP` window with a
 //! rounded GDI region, painted dark with documented GDI.
 //!
-//! Input without stealing focus: the root window takes the mouse capture (so
-//! clicks anywhere are routed by hit-testing screen coordinates against the open
-//! panels) and keyboard navigation arrives via a transient `WH_KEYBOARD_LL`
-//! hook. So the menu never needs activation and never dismisses the window that
-//! opened it (the start menu hosts its power flyout this way).
+//! Input without stealing focus (the menu is `WS_EX_NOACTIVATE` so it never
+//! dismisses the window that opened it — the start menu hosts its power flyout
+//! this way). Because a background window's mouse capture only sees clicks while
+//! the cursor is over it, the menu instead watches input globally with transient
+//! hooks for its lifetime: a `WH_KEYBOARD_LL` hook drives keyboard navigation
+//! and access keys, a `WH_MOUSE_LL` hook dismisses on any click outside the
+//! menu, and an `EVENT_SYSTEM_FOREGROUND` WinEvent hook dismisses when another
+//! window comes up. Mouse moves/clicks *inside* the menu arrive as ordinary
+//! window messages (the cursor is over our window).
 //!
 //! Items can be entries, separators, or submenus ([`Item`]); a submenu opens as
-//! a child window to the right with a chevron. [`track`] / [`track_items`] block
-//! until the user picks an entry (returning its command id) or dismisses the
-//! menu (returning 0).
+//! a child window to the right with a chevron. Labels may carry a `&` access-key
+//! marker (the next char is underlined and activates the item, Win11-style).
+//! [`track`] / [`track_items`] block until the user picks an entry (returning its
+//! command id) or dismisses the menu (returning 0).
 
 use std::cell::{Cell, RefCell};
 
@@ -23,6 +28,7 @@ use windows::core::w;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -31,6 +37,8 @@ use crate::util;
 
 /// Posted to the root window from the keyboard hook: WPARAM = virtual-key code.
 const MENU_KEY: u32 = WM_APP + 0x40;
+/// Posted to the root window to dismiss the menu (from the mouse / WinEvent hooks).
+const MENU_DISMISS: u32 = WM_APP + 0x41;
 
 /// ChevronRight in Segoe MDL2 Assets — drawn at the right of a submenu row.
 const GLYPH_CHEVRON: &str = "\u{E76C}";
@@ -96,9 +104,43 @@ enum Kind {
 #[derive(Clone)]
 struct RItem {
     cmd: u32,
-    /// Label as UTF-16 without a trailing NUL (slice length = char count).
+    /// Label as UTF-16 without a trailing NUL (slice length = char count). Keeps
+    /// the `&` access-key marker for `DrawTextW` prefix processing (underline).
     label: Vec<u16>,
+    /// Lowercased access-key letter from a `&` marker, if any.
+    access: Option<char>,
     kind: Kind,
+}
+
+/// Find the `&`-marked access key (the char after the first lone `&`), lowercased.
+fn access_key(s: &str) -> Option<char> {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i + 1 < b.len() {
+        if b[i] == b'&' && b[i + 1] != b'&' {
+            return s[i + 1..].chars().next().map(|c| c.to_ascii_lowercase());
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Label UTF-16 with the first lone `&` removed (for width measurement, since
+/// `DrawTextW` does not render the marker itself).
+fn measure_label(label: &[u16]) -> Vec<u16> {
+    let mut out = Vec::with_capacity(label.len());
+    let mut dropped = false;
+    let mut i = 0;
+    while i < label.len() {
+        if !dropped && label[i] == b'&' as u16 && label.get(i + 1) != Some(&(b'&' as u16)) {
+            dropped = true;
+            i += 1;
+            continue;
+        }
+        out.push(label[i]);
+        i += 1;
+    }
+    out
 }
 
 fn resolve(items: &[Item]) -> Vec<RItem> {
@@ -108,16 +150,19 @@ fn resolve(items: &[Item]) -> Vec<RItem> {
             Item::Entry(id, t) => RItem {
                 cmd: *id,
                 label: t.encode_utf16().collect(),
+                access: access_key(t),
                 kind: Kind::Entry,
             },
             Item::Separator => RItem {
                 cmd: 0,
                 label: Vec::new(),
+                access: None,
                 kind: Kind::Separator,
             },
             Item::Submenu(t, ch) => RItem {
                 cmd: 0,
                 label: t.encode_utf16().collect(),
+                access: access_key(t),
                 kind: Kind::Submenu(resolve(ch)),
             },
         })
@@ -141,7 +186,9 @@ struct Menu {
     panels: Vec<Panel>,
     result: Option<u32>,
     done: bool,
-    hook: HHOOK,
+    kb_hook: HHOOK,
+    mouse_hook: HHOOK,
+    winevent: HWINEVENTHOOK,
 }
 
 /// Build a dark popup menu from `(command_id, label)` items (empty label =
@@ -220,18 +267,31 @@ pub fn track_items(
                 }],
                 result: None,
                 done: false,
-                hook: HHOOK::default(),
+                kb_hook: HHOOK::default(),
+                mouse_hook: HHOOK::default(),
+                winevent: HWINEVENTHOOK::default(),
             });
         });
         place_panel(hwnd, px, py, w, h);
-        let _ = SetCapture(hwnd);
-        if let Ok(hook) = SetWindowsHookExW(WH_KEYBOARD_LL, Some(kb_hook), None, 0) {
-            MENU.with_borrow_mut(|m| {
-                if let Some(m) = m.as_mut() {
-                    m.hook = hook;
-                }
-            });
-        }
+        // Watch input globally for the menu's lifetime (we never take focus).
+        let kb = SetWindowsHookExW(WH_KEYBOARD_LL, Some(kb_hook), None, 0).unwrap_or_default();
+        let mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), None, 0).unwrap_or_default();
+        let we = SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            None,
+            Some(winevent_hook),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        );
+        MENU.with_borrow_mut(|m| {
+            if let Some(m) = m.as_mut() {
+                m.kb_hook = kb;
+                m.mouse_hook = mouse;
+                m.winevent = we;
+            }
+        });
         let _ = InvalidateRect(hwnd, None, true);
 
         // Modal loop: pump the thread's queue until an item is chosen or the
@@ -254,18 +314,21 @@ pub fn track_items(
         }
 
         // Teardown.
-        let (result, hook, panels) = MENU.with_borrow_mut(|m| match m.take() {
-            Some(m) => (m.result, m.hook, m.panels),
-            None => (None, HHOOK::default(), Vec::new()),
-        });
-        if !hook.is_invalid() {
-            let _ = UnhookWindowsHookEx(hook);
+        let menu = MENU.with_borrow_mut(|m| m.take());
+        let Some(menu) = menu else { return 0 };
+        if !menu.kb_hook.is_invalid() {
+            let _ = UnhookWindowsHookEx(menu.kb_hook);
         }
-        let _ = ReleaseCapture();
-        for p in panels {
+        if !menu.mouse_hook.is_invalid() {
+            let _ = UnhookWindowsHookEx(menu.mouse_hook);
+        }
+        if !menu.winevent.is_invalid() {
+            let _ = UnhookWinEvent(menu.winevent);
+        }
+        for p in menu.panels {
             let _ = DestroyWindow(p.hwnd);
         }
-        result.unwrap_or(0)
+        menu.result.unwrap_or(0)
     }
 }
 
@@ -304,7 +367,7 @@ unsafe fn measure_panel(items: &[RItem]) -> (i32, i32) {
             continue;
         }
         let mut sz = SIZE::default();
-        let _ = GetTextExtentPoint32W(hdc, &it.label, &mut sz);
+        let _ = GetTextExtentPoint32W(hdc, &measure_label(&it.label), &mut sz);
         text_w = text_w.max(sz.cx);
     }
     SelectObject(hdc, old);
@@ -512,7 +575,6 @@ unsafe fn open_submenu(parent_idx: usize, item_idx: usize, select_first: bool) {
             });
         }
     });
-    // The child is WS_EX_NOACTIVATE, so showing it leaves the root's capture intact.
     place_panel(child, cx, cy, w, h);
     let _ = InvalidateRect(child, None, true);
 }
@@ -604,12 +666,8 @@ unsafe fn paint(panel: &Panel) {
                     right: r.right - scaled(TEXT_R),
                     bottom: r.bottom,
                 };
-                draw_str(
-                    mem,
-                    &it.label,
-                    &mut tr,
-                    DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX,
-                );
+                // No DT_NOPREFIX: the `&` marker underlines the access-key letter.
+                draw_str(mem, &it.label, &mut tr, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
                 if matches!(it.kind, Kind::Submenu(_)) {
                     SelectObject(mem, HGDIOBJ(sym_font().0));
                     SetTextColor(mem, COLORREF(COL_TEXT_DIM));
@@ -645,24 +703,87 @@ fn is_nav(vk: u32) -> bool {
     )
 }
 
-/// Low-level keyboard hook: forwards navigation keys to the root window while
-/// the menu is up (and swallows them so they don't reach the focused window).
+/// Keys the open menu consumes: navigation plus letters/digits (access keys).
+/// Everything else (modifiers, function keys, …) passes through.
+fn is_menu_key(vk: u32) -> bool {
+    is_nav(vk) || (0x30..=0x5A).contains(&vk)
+}
+
+fn root_hwnd() -> Option<HWND> {
+    MENU.with(|c| {
+        c.try_borrow()
+            .ok()
+            .and_then(|m| m.as_ref().and_then(|m| m.panels.first().map(|p| p.hwnd)))
+    })
+}
+
+/// Low-level keyboard hook: forwards the keys the menu handles to its root
+/// window while it is up (and swallows them so they don't reach other windows).
 unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 && (wparam.0 as u32 == WM_KEYDOWN || wparam.0 as u32 == WM_SYSKEYDOWN) {
         let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
-        let root = MENU.with(|c| {
-            c.try_borrow()
-                .ok()
-                .and_then(|m| m.as_ref().and_then(|m| m.panels.first().map(|p| p.hwnd)))
-        });
-        if let Some(root) = root {
-            if is_nav(kb.vkCode) {
+        if let Some(root) = root_hwnd() {
+            if is_menu_key(kb.vkCode) {
                 let _ = PostMessageW(root, MENU_KEY, WPARAM(kb.vkCode as usize), LPARAM(0));
                 return LRESULT(1);
             }
         }
     }
     CallNextHookEx(None, code, wparam, lparam)
+}
+
+/// Low-level mouse hook: a button press anywhere outside the open menu dismisses
+/// it (clicks inside arrive as ordinary window messages and are left alone). The
+/// click is not swallowed, so it still reaches whatever the user clicked.
+unsafe extern "system" fn mouse_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code >= 0 {
+        let down = matches!(
+            wparam.0 as u32,
+            WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_NCLBUTTONDOWN | WM_NCRBUTTONDOWN
+        );
+        if down {
+            let ms = &*(lparam.0 as *const MSLLHOOKSTRUCT);
+            let inside = MENU.with(|c| {
+                c.try_borrow()
+                    .ok()
+                    .and_then(|m| m.as_ref().map(|m| hit_panel_item(m, ms.pt).is_some()))
+                    .unwrap_or(false)
+            });
+            if !inside {
+                if let Some(root) = root_hwnd() {
+                    let _ = PostMessageW(root, MENU_DISMISS, WPARAM(0), LPARAM(0));
+                }
+            }
+        }
+    }
+    CallNextHookEx(None, code, wparam, lparam)
+}
+
+/// WinEvent hook: another window coming to the foreground (a new window opening,
+/// or one activated by a click we let through) dismisses the menu.
+unsafe extern "system" fn winevent_hook(
+    _hook: HWINEVENTHOOK,
+    event: u32,
+    hwnd: HWND,
+    _id_object: i32,
+    _id_child: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    if event != EVENT_SYSTEM_FOREGROUND {
+        return;
+    }
+    let ours = MENU.with(|c| {
+        c.try_borrow()
+            .ok()
+            .and_then(|m| m.as_ref().map(|m| m.panels.iter().any(|p| p.hwnd == hwnd)))
+            .unwrap_or(false)
+    });
+    if !ours {
+        if let Some(root) = root_hwnd() {
+            let _ = PostMessageW(root, MENU_DISMISS, WPARAM(0), LPARAM(0));
+        }
+    }
 }
 
 fn set_done() {
@@ -767,7 +888,22 @@ unsafe fn on_key(vk: u32) {
                     Act::Done
                 }
             }
-            _ => Act::None,
+            // Access key: a letter/digit that matches an item's `&` mnemonic
+            // activates it (Win11-style — no Alt needed once the menu is open).
+            _ => {
+                let ch = (vk as u8 as char).to_ascii_lowercase();
+                match panel
+                    .items
+                    .iter()
+                    .position(|it| it.access == Some(ch) && !matches!(it.kind, Kind::Separator))
+                {
+                    Some(i) => match &panel.items[i].kind {
+                        Kind::Submenu(_) => Act::OpenSub(depth, i),
+                        _ => Act::Select(panel.items[i].cmd),
+                    },
+                    None => Act::None,
+                }
+            }
         }
     });
     match act {
@@ -792,20 +928,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             };
             let _ = ClientToScreen(hwnd, &mut pt);
             on_mouse_move(pt);
-            LRESULT(0)
-        }
-        WM_LBUTTONDOWN => {
-            let mut pt = POINT {
-                x: util::loword(lparam.0),
-                y: util::hiword(lparam.0),
-            };
-            let _ = ClientToScreen(hwnd, &mut pt);
-            let inside = MENU.with_borrow(|m| {
-                m.as_ref().map(|m| hit_panel_item(m, pt).is_some()).unwrap_or(false)
-            });
-            if !inside {
-                set_done();
-            }
             LRESULT(0)
         }
         WM_LBUTTONUP => {
@@ -838,34 +960,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             on_key(wparam.0 as u32);
             LRESULT(0)
         }
-        WM_CAPTURECHANGED => {
-            // Capture moved elsewhere. If it went to one of our own panels (our
-            // own bookkeeping), ignore; otherwise something outside took it, so
-            // dismiss rather than strand a menu with no capture.
-            let gaining = HWND(lparam.0 as *mut _);
-            let ours = MENU.with_borrow(|m| {
-                m.as_ref()
-                    .map(|m| m.panels.iter().any(|p| p.hwnd == gaining))
-                    .unwrap_or(false)
-            });
-            if !ours {
-                set_done();
-            }
-            LRESULT(0)
-        }
-        WM_RBUTTONDOWN | WM_MBUTTONDOWN => {
-            // A non-left click outside the menu dismisses it (like a real menu).
-            let mut pt = POINT {
-                x: util::loword(lparam.0),
-                y: util::hiword(lparam.0),
-            };
-            let _ = ClientToScreen(hwnd, &mut pt);
-            let inside = MENU.with_borrow(|m| {
-                m.as_ref().map(|m| hit_panel_item(m, pt).is_some()).unwrap_or(false)
-            });
-            if !inside {
-                set_done();
-            }
+        MENU_DISMISS => {
+            set_done();
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),

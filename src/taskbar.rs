@@ -985,22 +985,24 @@ fn show_winx_menu(hwnd: HWND, select_first: bool) {
     });
     let Some((x, y)) = anchor else { return };
 
+    // Labels carry Windows 11's Win+X access keys (the `&` underlines the letter
+    // and activates the item when pressed): V, Y, M, K, G, I, T, E, R, U, D.
     // Power flyout — Restart / Shut down, matching the start menu's flyout.
-    let power = [Item::Entry(20, "Restart"), Item::Entry(21, "Shut down")];
+    let power = [Item::Entry(20, "&Restart"), Item::Entry(21, "Sh&ut down")];
     let items = [
-        Item::Entry(10, "Event Viewer"),
-        Item::Entry(11, "System"),
-        Item::Entry(12, "Device Manager"),
-        Item::Entry(13, "Disk Management"),
-        Item::Entry(14, "Computer Management"),
-        Item::Entry(15, "Terminal"),
+        Item::Entry(10, "E&vent Viewer"),
+        Item::Entry(11, "S&ystem"),
+        Item::Entry(12, "Device &Manager"),
+        Item::Entry(13, "Dis&k Management"),
+        Item::Entry(14, "Computer Mana&gement"),
+        Item::Entry(15, "Term&inal"),
         Item::Separator,
-        Item::Entry(16, "Task Manager"),
-        Item::Entry(17, "File Explorer"),
-        Item::Entry(18, "Run"),
+        Item::Entry(16, "&Task Manager"),
+        Item::Entry(17, "File &Explorer"),
+        Item::Entry(18, "&Run"),
         Item::Separator,
-        Item::Submenu("Shut down or sign out", &power),
-        Item::Entry(22, "Desktop"),
+        Item::Submenu("Shut down or sign o&ut", &power),
+        Item::Entry(22, "&Desktop"),
     ];
     let cmd = crate::menu::track_items(hwnd, x, y, TPM_BOTTOMALIGN, &items, select_first);
     match cmd {
