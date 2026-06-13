@@ -7,9 +7,15 @@
 //! directly with a real icon and the standard prompt, and nudge the dialog to
 //! the bottom-left above the taskbar with a one-shot thread-local `WH_CBT` hook.
 //!
+//! The dialog is owned by a throwaway *hidden* window, not the taskbar: a modal
+//! dialog disables its owner, so owning it with the taskbar would freeze the
+//! shell (the original bug). The hidden owner also keeps the dialog off our
+//! taskbar (owned windows aren't task buttons). `RunFileDlg` runs its own modal
+//! loop which pumps messages, so the taskbar/start menu stay live underneath.
+//!
 //! `RunFileDlg` (shell32 ordinal 61) is undocumented — a confined exception like
 //! `darkmode.rs`. The icon (`SHGetStockIconInfo`) and positioning (`WH_CBT`) are
-//! documented. The dialog is shell-rendered and stays light by design.
+//! documented.
 
 use std::cell::Cell;
 
@@ -17,7 +23,9 @@ use windows::core::{w, PCSTR, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::Shell::{SHGetStockIconInfo, SHGSI_ICON, SHSTOCKICONINFO, SIID_APPLICATION};
+use windows::Win32::UI::Shell::{
+    SHGetStockIconInfo, SHGSI_ICON, SHSTOCKICONINFO, SIID_APPLICATION, SIID_DESKTOPPC,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::taskbar::scaled;
@@ -36,8 +44,9 @@ thread_local! {
 
 /// Show the shell Run dialog with a proper icon + prompt, positioned bottom-left
 /// above the taskbar (whose top edge is `taskbar_top`). Blocks until dismissed:
-/// `RunFileDlg` is modal but pumps messages, so the taskbar stays responsive.
-pub fn show(owner: HWND, taskbar_top: i32) {
+/// `RunFileDlg` is modal but pumps messages and is owned by a hidden window, so
+/// the taskbar and start menu stay usable underneath it.
+pub fn show(taskbar_top: i32) {
     unsafe {
         let Ok(shell32) = GetModuleHandleW(w!("shell32.dll")) else {
             return;
@@ -48,7 +57,8 @@ pub fn show(owner: HWND, taskbar_top: i32) {
         };
         let run_file_dlg: RunFileDlg = std::mem::transmute(proc);
 
-        let icon = stock_app_icon();
+        let owner = create_owner();
+        let icon = run_icon();
         ANCHOR_TOP.set(taskbar_top);
         install_cbt();
 
@@ -59,20 +69,57 @@ pub fn show(owner: HWND, taskbar_top: i32) {
         // The hook normally removes itself on first activation; this covers the
         // case where the dialog never showed.
         remove_cbt();
+        if !owner.is_invalid() {
+            let _ = DestroyWindow(owner);
+        }
     }
 }
 
-/// The standard application stock icon — a documented, version-stable icon for
-/// the Run box (the shell's own Run icon isn't exposed by a documented API).
-unsafe fn stock_app_icon() -> HICON {
-    let mut info = SHSTOCKICONINFO {
-        cbSize: std::mem::size_of::<SHSTOCKICONINFO>() as u32,
+/// A hidden, ownerless tool window to own the Run dialog (see module docs).
+unsafe fn create_owner() -> HWND {
+    let hinstance: HINSTANCE = GetModuleHandleW(None).map(Into::into).unwrap_or_default();
+    let class = w!("StartPE_RunOwner");
+    let wc = WNDCLASSW {
+        lpfnWndProc: Some(owner_proc),
+        hInstance: hinstance,
+        lpszClassName: class,
         ..Default::default()
     };
-    match SHGetStockIconInfo(SIID_APPLICATION, SHGSI_ICON, &mut info) {
-        Ok(()) => info.hIcon,
-        Err(_) => HICON::default(),
+    RegisterClassW(&wc); // idempotent; returns 0 if already registered
+    CreateWindowExW(
+        WS_EX_TOOLWINDOW,
+        class,
+        w!("StartPE Run"),
+        WS_POPUP,
+        0,
+        0,
+        0,
+        0,
+        None,
+        None,
+        hinstance,
+        None,
+    )
+    .unwrap_or_default()
+}
+
+unsafe extern "system" fn owner_proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+    DefWindowProcW(h, m, w, l)
+}
+
+/// A monitor icon for the Run box, like Task Manager's "Create New Task" dialog.
+/// Documented and version-stable, unlike a guessed shell32 icon index.
+unsafe fn run_icon() -> HICON {
+    for siid in [SIID_DESKTOPPC, SIID_APPLICATION] {
+        let mut info = SHSTOCKICONINFO {
+            cbSize: std::mem::size_of::<SHSTOCKICONINFO>() as u32,
+            ..Default::default()
+        };
+        if SHGetStockIconInfo(siid, SHGSI_ICON, &mut info).is_ok() && !info.hIcon.is_invalid() {
+            return info.hIcon;
+        }
     }
+    HICON::default()
 }
 
 fn install_cbt() {

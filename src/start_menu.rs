@@ -1188,7 +1188,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     hide(hwnd);
                     let mut rc = RECT::default();
                     let _ = GetWindowRect(taskbar, &mut rc);
-                    crate::run_dialog::show(taskbar, rc.top);
+                    crate::run_dialog::show(rc.top);
                 }
                 Action::Shutdown => {
                     hide(hwnd);

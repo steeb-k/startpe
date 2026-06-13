@@ -1528,7 +1528,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     // Use the taskbar's top edge to seat the dialog above it.
                     let mut rc = RECT::default();
                     let _ = GetWindowRect(hwnd, &mut rc);
-                    crate::run_dialog::show(hwnd, rc.top);
+                    crate::run_dialog::show(rc.top);
                 }
                 HOTKEY_EXPLORER => run("explorer.exe", "shell:MyComputerFolder"),
                 HOTKEY_DESKTOP => toggle_show_desktop(),
