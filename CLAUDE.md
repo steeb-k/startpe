@@ -63,6 +63,13 @@ updated when behavior or config values change.
   write the default in `pebakery/StartPE.script`. All three, every time. If the
   setting is a simple on/off, also add it to the `TOGGLES` table in
   `settings.rs` so it shows up in the settings pane.
+- Changing an existing **default** is not enough to change behavior in a PE
+  build. The PEBakery scripts write *every* StartPE value explicitly into
+  `HKLM` at image-build time, and `config.rs` reads `HKLM` first — so an
+  explicit script value always overrides the Rust default (which only applies
+  when the key is absent). When you change a default, also update the matching
+  `RegWrite` in **both** `pebakery/StartPE.script` and the deployed
+  winrx-creator `050-StartPE.script` (`D:\winrx-creator\Projects\winrx-creator\Shell\050-StartPE.script`).
 - License headers: `// SPDX-License-Identifier: GPL-3.0-or-later` on new files.
 
 ## Build & test
