@@ -56,8 +56,8 @@ updated when behavior or config values change.
   keyboard hook + `PrintWindow` screenshot grid), `menu.rs` (dark owner-drawn
   popup menus), `darkmode.rs` (uxtheme dark app mode for shell menus),
   `run_dialog.rs` (shell Run dialog via RunFileDlg), `settings.rs` (dark
-  settings pane for the boolean config switches, opened from the taskbar menu),
-  `config.rs` (registry), `util.rs` (UTF-16).
+  settings pane: boolean config switches + Start button color picker, opened
+  from the taskbar menu), `config.rs` (registry), `util.rs` (UTF-16).
 - New user-facing settings: add to `config.rs` (registry value under
   `HKCU\Software\StartPE`), document in the `docs/ARCHITECTURE.md` table, and
   write the default in `pebakery/StartPE.script`. All three, every time. If the
