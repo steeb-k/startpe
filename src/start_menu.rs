@@ -12,7 +12,9 @@
 //! mouse and keyboard) across the program list, the right-pane links, the search
 //! box, and the power controls; Enter activates the focused item, and Right on a
 //! ">" folder row expands it. Spatially: from the search box Right → Shut down →
-//! its flyout chevron. See `navigate` / `resolve` / `perform`.
+//! its flyout chevron → (Right again) opens the Restart / Shut down flyout, with
+//! Restart highlighted by default. The menu accent (search-box focus border) is
+//! the Start button glyph color. See `navigate` / `resolve` / `perform`.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -30,7 +32,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::config::Config;
 use crate::taskbar::{
-    make_font, make_font_face, scaled, COL_ACCENT, COL_BG, COL_HOVER, COL_TEXT, COL_TEXT_DIM,
+    make_font, make_font_face, scaled, COL_BG, COL_HOVER, COL_TEXT, COL_TEXT_DIM,
 };
 use crate::util;
 
@@ -119,6 +121,13 @@ struct MenuState {
     query: String,
     scroll: i32,
     hover: Hit,
+    /// Last mouse position seen in `WM_MOUSEMOVE` (client px). Used to drop the
+    /// synthetic zero-movement move the system posts when the window is shown,
+    /// which would otherwise steal the keyboard focus off the search box.
+    last_mouse: (i32, i32),
+    /// Accent color (COLORREF) — the Start button glyph color, so the menu and
+    /// the button match. Refreshed from the taskbar each time the menu opens.
+    accent: u32,
     font: HFONT,
     font_small: HFONT,
     font_glyph: HFONT,
@@ -182,6 +191,8 @@ pub fn create(cfg: &Config, taskbar: HWND) -> Result<()> {
                 query: String::new(),
                 scroll: 0,
                 hover: Hit::None,
+                last_mouse: (i32::MIN, i32::MIN),
+                accent: cfg.start_button_color,
                 font: make_font(scaled(15), 400),
                 font_small: make_font(scaled(13), 400),
                 font_glyph: make_font_face(scaled(15), 400, w!("Segoe MDL2 Assets")),
@@ -296,6 +307,7 @@ pub fn toggle() {
                 m.query.clear();
                 m.scroll = 0;
                 m.showing_all = false;
+                m.accent = crate::taskbar::start_button_color();
                 rebuild(m);
                 // Open with the search box focused (keyboard-first): typing
                 // searches immediately, Right moves to the Shut down button.
@@ -315,6 +327,17 @@ pub fn toggle() {
             };
             let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height, SWP_SHOWWINDOW);
             let _ = SetForegroundWindow(hwnd);
+            // Record the cursor (in client px of the now-positioned window) so the
+            // synthetic WM_MOUSEMOVE the system posts on show — same coordinates,
+            // no real movement — doesn't bump focus off the search box.
+            let mut pt = POINT::default();
+            let _ = GetCursorPos(&mut pt);
+            let _ = ScreenToClient(hwnd, &mut pt);
+            MENU.with_borrow_mut(|m| {
+                if let Some(m) = m.as_mut() {
+                    m.last_mouse = (pt.x, pt.y);
+                }
+            });
         }
     }
 }
@@ -870,7 +893,7 @@ fn draw_footer(m: &MenuState, hdc: HDC) {
         let pen = CreatePen(
             PS_SOLID,
             if focused { scaled(1).max(1) } else { 1 },
-            COLORREF(if focused { COL_ACCENT } else { COL_SEP }),
+            COLORREF(if focused { m.accent } else { COL_SEP }),
         );
         let old_brush = SelectObject(hdc, brush);
         let old_pen = SelectObject(hdc, pen);
@@ -1035,6 +1058,7 @@ fn shutdown_flyout(hwnd: HWND, x: i32, y: i32) {
         y,
         TPM_BOTTOMALIGN,
         &[(1, "Restart"), (2, "Shut down")],
+        true, // default-highlight Restart (for keyboard opening)
     );
     match cmd {
         1 => {
@@ -1389,11 +1413,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let action = MENU.with_borrow_mut(|m| {
                     let m = m.as_mut().unwrap();
                     if matches!(dir, Dir::Right) {
-                        if let Hit::Row(i) = m.hover {
-                            if matches!(m.items.get(i).map(|it| &it.kind), Some(ItemKind::Folder(_)))
+                        match m.hover {
+                            // Right on a ">" folder row expands it (like Enter).
+                            Hit::Row(i)
+                                if matches!(
+                                    m.items.get(i).map(|it| &it.kind),
+                                    Some(ItemKind::Folder(_))
+                                ) =>
                             {
                                 return Some(resolve(m, Hit::Row(i)));
                             }
+                            // Right on the power chevron opens the flyout.
+                            Hit::ShutdownMenu => return Some(resolve(m, Hit::ShutdownMenu)),
+                            _ => {}
                         }
                     }
                     navigate(m, dir);
@@ -1452,6 +1484,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let y = util::hiword(lparam.0);
             let changed = MENU.with_borrow_mut(|m| {
                 let m = m.as_mut().unwrap();
+                // Ignore a move that didn't actually move (the synthetic one on
+                // show), so keyboard focus isn't disturbed by just appearing.
+                if (x, y) == m.last_mouse {
+                    return false;
+                }
+                m.last_mouse = (x, y);
                 let hit = hit_test(m, x, y);
                 let changed = hit != m.hover;
                 m.hover = hit;

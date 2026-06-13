@@ -952,6 +952,7 @@ fn show_taskbar_menu(hwnd: HWND) {
             (0, ""), // separator: StartPE's own settings live below
             (3, "Settings"),
         ],
+        false,
     );
     match cmd {
         1 => run("taskmgr.exe", ""),
@@ -966,6 +967,16 @@ fn show_taskbar_menu(hwnd: HWND) {
 /// even after the setting is toggled at runtime.
 pub fn is_centered() -> bool {
     STATE.with_borrow(|s| s.as_ref().map(|s| s.cfg.center_taskbar).unwrap_or(true))
+}
+
+/// The Start button glyph color (COLORREF), read live from config. The start
+/// menu uses it as its accent so the two match (and track a runtime change).
+pub fn start_button_color() -> u32 {
+    STATE.with_borrow(|s| {
+        s.as_ref()
+            .map(|s| s.cfg.start_button_color)
+            .unwrap_or(0x00E6_5AB4)
+    })
 }
 
 /// Re-read the registry config and apply the changes that can take effect live
