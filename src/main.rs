@@ -29,6 +29,23 @@ use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, TranslateMessage, MSG,
 };
 
+/// Append a version-stamped startup line to `X:\startpe.log` (best-effort).
+fn log_startup() {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("X:\\startpe.log")
+    {
+        let _ = writeln!(
+            f,
+            "StartPE v{} starting (pid {})",
+            env!("CARGO_PKG_VERSION"),
+            std::process::id()
+        );
+    }
+}
+
 fn main() -> windows::core::Result<()> {
     unsafe {
         // Single instance: a second launch (e.g. from a Run key after an
@@ -37,6 +54,11 @@ fn main() -> windows::core::Result<()> {
         if GetLastError() == ERROR_ALREADY_EXISTS {
             return Ok(());
         }
+
+        // Always log the running version at startup so there's a baseline to
+        // check against (PE has no Event Viewer); new features should add their
+        // own version-stamped logging too.
+        log_startup();
 
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 

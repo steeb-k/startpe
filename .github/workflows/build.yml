@@ -21,9 +21,10 @@ jobs:
           - target: x86_64-pc-windows-msvc
             exe_asset: startpe.exe
             dll_asset: startpe_loader.dll
-          - target: aarch64-pc-windows-msvc
-            exe_asset: startpe-arm64.exe
-            dll_asset: startpe_loader-arm64.dll
+          # TODO: re-enable ARM64 builds later (temporarily disabled).
+          # - target: aarch64-pc-windows-msvc
+          #   exe_asset: startpe-arm64.exe
+          #   dll_asset: startpe_loader-arm64.dll
     steps:
       - uses: actions/checkout@v4
 
