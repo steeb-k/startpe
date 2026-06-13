@@ -11,6 +11,7 @@
 //! icons, context menus, sorting and folder navigation behave normally.
 
 use core::ffi::c_void;
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
 use windows::core::{implement, Interface, Result, GUID, HRESULT, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, S_OK};
@@ -31,10 +32,33 @@ const JUNCTION_CLSIDS: [&str; 5] = [
     "{5399E694-6CE5-4D6C-8FCE-1D8870FDCBA0}", // Control Panel
 ];
 
+/// TEMP diagnostics: append a line to `X:\startpe_desktop.log`. Used to pinpoint
+/// why the filtered desktop view comes up empty in PE (no StartPE-side log
+/// otherwise). Remove once the wrapper is working.
+pub(crate) fn dlog(msg: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("X:\\startpe_desktop.log")
+    {
+        let _ = writeln!(f, "{msg}");
+    }
+}
+
+/// Counts `FilterEnum::Next` calls so we only log the first few.
+static NEXT_LOG: AtomicU32 = AtomicU32::new(0);
+
 /// Build a desktop view that hosts the real namespace desktop but hides the
 /// junction items. Returns `None` on any failure (caller falls back).
 pub unsafe fn create_filtered_desktop_view() -> Option<IShellView> {
-    let desktop = SHGetDesktopFolder().ok()?;
+    let desktop = match SHGetDesktopFolder() {
+        Ok(d) => d,
+        Err(e) => {
+            dlog(&format!("create_filtered: SHGetDesktopFolder ERR {e:?}"));
+            return None;
+        }
+    };
     let filtered: IShellFolder = FilterFolder {
         inner: desktop.clone(),
     }
@@ -45,7 +69,16 @@ pub unsafe fn create_filtered_desktop_view() -> Option<IShellView> {
         psvOuter: core::mem::ManuallyDrop::new(None),
         psfvcb: core::mem::ManuallyDrop::new(None),
     };
-    SHCreateShellFolderView(&create).ok()
+    match SHCreateShellFolderView(&create) {
+        Ok(v) => {
+            dlog("create_filtered: SHCreateShellFolderView OK");
+            Some(v)
+        }
+        Err(e) => {
+            dlog(&format!("create_filtered: SHCreateShellFolderView ERR {e:?}"));
+            None
+        }
+    }
 }
 
 /// True if `pidl` (a child of `folder`) is one of the hidden junctions, decided
@@ -126,6 +159,11 @@ impl IShellFolder_Impl for FilterFolder_Impl {
         unsafe {
             let mut inner_enum: Option<IEnumIDList> = None;
             let hr = self.inner.EnumObjects(hwnd, grfflags, &mut inner_enum);
+            dlog(&format!(
+                "EnumObjects grfflags=0x{grfflags:X} hr=0x{:08X} inner_some={}",
+                hr.0 as u32,
+                inner_enum.is_some()
+            ));
             match inner_enum {
                 Some(e) if hr.is_ok() => {
                     let filt: IEnumIDList = FilterEnum {
@@ -277,6 +315,8 @@ impl IEnumIDList_Impl for FilterEnum_Impl {
     fn Next(&self, celt: u32, rgelt: *mut *mut ITEMIDLIST, pceltfetched: *mut u32) -> HRESULT {
         unsafe {
             let mut written = 0u32;
+            let mut pulled = 0u32;
+            let mut filtered = 0u32;
             while written < celt {
                 let mut one: *mut ITEMIDLIST = core::ptr::null_mut();
                 let mut got = 0u32;
@@ -286,7 +326,9 @@ impl IEnumIDList_Impl for FilterEnum_Impl {
                 if hr != S_OK || got == 0 || one.is_null() {
                     break;
                 }
+                pulled += 1;
                 if is_junction(&self.folder, one) {
+                    filtered += 1;
                     ILFree(Some(one));
                     continue;
                 }
@@ -295,6 +337,11 @@ impl IEnumIDList_Impl for FilterEnum_Impl {
             }
             if !pceltfetched.is_null() {
                 *pceltfetched = written;
+            }
+            if NEXT_LOG.fetch_add(1, Relaxed) < 8 {
+                dlog(&format!(
+                    "Next celt={celt} pulled={pulled} filtered={filtered} wrote={written}"
+                ));
             }
             // S_OK only if we filled the whole request, else S_FALSE (HRESULT 1).
             if written == celt {

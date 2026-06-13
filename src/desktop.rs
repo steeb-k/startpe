@@ -208,18 +208,32 @@ unsafe fn host_shell_view(parent: HWND, cfg: &Config) {
     // Control Panel, Recycle Bin) filtered out programmatically — so only real
     // shortcuts show, while the Shell\Bags\1\Desktop icon layout still applies.
     // ShowSystemDesktopIcons hosts the full namespace desktop instead.
+    use crate::desktop_filter::dlog;
+    dlog(&format!(
+        "host_shell_view show_system={}",
+        cfg.show_system_desktop_icons
+    ));
     let view: IShellView = if cfg.show_system_desktop_icons {
         match full_desktop_view(parent) {
             Some(v) => v,
-            None => return,
+            None => {
+                dlog("full_desktop_view (show_system) -> None");
+                return;
+            }
         }
     } else {
         match crate::desktop_filter::create_filtered_desktop_view() {
             Some(v) => v,
-            None => match full_desktop_view(parent) {
-                Some(v) => v,
-                None => return,
-            },
+            None => {
+                dlog("create_filtered -> None, falling back to full");
+                match full_desktop_view(parent) {
+                    Some(v) => v,
+                    None => {
+                        dlog("full_desktop_view fallback -> None");
+                        return;
+                    }
+                }
+            }
         }
     };
 
@@ -236,8 +250,14 @@ unsafe fn host_shell_view(parent: HWND, cfg: &Config) {
     // without one it creates no icon list. A NULL browser left the view empty.
     let browser: IShellBrowser = DesktopBrowser { hwnd: parent }.into();
     let view_hwnd = match view.CreateViewWindow(None, &fs, &browser, &rc) {
-        Ok(h) => h,
-        Err(_) => return,
+        Ok(h) => {
+            dlog(&format!("CreateViewWindow OK hwnd=0x{:X}", h.0 as usize));
+            h
+        }
+        Err(e) => {
+            dlog(&format!("CreateViewWindow ERR {e:?}"));
+            return;
+        }
     };
     let _ = view.UIActivate(SVUIA_ACTIVATE_NOFOCUS.0 as u32);
     let _ = ShowWindow(view_hwnd, SW_SHOW);
