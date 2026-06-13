@@ -211,7 +211,8 @@ unsafe fn host_shell_view(parent: HWND, cfg: &Config) {
     // ShowSystemDesktopIcons hosts the full namespace desktop instead.
     use crate::desktop_filter::dlog;
     dlog(&format!(
-        "host_shell_view show_system={}",
+        "=== StartPE desktop v{} === host_shell_view show_system={}",
+        env!("CARGO_PKG_VERSION"),
         cfg.show_system_desktop_icons
     ));
 
@@ -358,8 +359,13 @@ impl IShellBrowser_Impl for DesktopBrowser_Impl {
     // The generic DefView negotiates its menu bar via these during
     // CreateViewWindow; a host with no menu bar must return S_OK (reserving no
     // space), not E_NOTIMPL — E_NOTIMPL makes CreateViewWindow fail (E_FAIL).
-    fn InsertMenusSB(&self, _hmenushared: HMENU, _lpmenuwidths: *mut OLEMENUGROUPWIDTHS) -> Result<()> {
+    fn InsertMenusSB(&self, _hmenushared: HMENU, lpmenuwidths: *mut OLEMENUGROUPWIDTHS) -> Result<()> {
         blog("InsertMenusSB");
+        // Reserve no menu groups; leaving the widths uninitialized can make the
+        // DefView's menu merge (and thus CreateViewWindow) fail.
+        if !lpmenuwidths.is_null() {
+            unsafe { (*lpmenuwidths).width = [0; 6] };
+        }
         Ok(())
     }
     fn SetMenuSB(&self, _hmenushared: HMENU, _holemenures: isize, _hwndactiveobject: HWND) -> Result<()> {
