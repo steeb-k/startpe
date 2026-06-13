@@ -252,7 +252,11 @@ unsafe fn host_shell_view(parent: HWND, cfg: &Config) {
         ViewMode: FVM_ICON.0 as u32,
         fFlags: (FWF_DESKTOP | FWF_NOCLIENTEDGE | FWF_NOSCROLL).0 as u32,
     };
-    let browser: IShellBrowser = DesktopBrowser { hwnd: parent }.into();
+    let browser: IShellBrowser = DesktopBrowser {
+        hwnd: parent,
+        view: RefCell::new(None),
+    }
+    .into();
     let view_hwnd = match view.CreateViewWindow(None, &fs, &browser, &rc) {
         Ok(h) => h,
         Err(_) => return,
@@ -384,6 +388,10 @@ unsafe fn apply_layout(lv: HWND, text: &str) {
 #[implement(IShellBrowser)]
 struct DesktopBrowser {
     hwnd: HWND,
+    /// The active shell view, captured from `OnViewWindowActive`. The desktop
+    /// view's drag-drop (icon repositioning) needs the browser to report it via
+    /// `QueryActiveShellView`, or drops are rejected (no-drop cursor).
+    view: RefCell<Option<IShellView>>,
 }
 
 #[allow(non_snake_case)]
@@ -440,9 +448,10 @@ impl IShellBrowser_Impl for DesktopBrowser_Impl {
         Err(E_NOTIMPL.into())
     }
     fn QueryActiveShellView(&self) -> Result<IShellView> {
-        Err(E_NOTIMPL.into())
+        self.view.borrow().clone().ok_or_else(|| E_FAIL.into())
     }
-    fn OnViewWindowActive(&self, _pshv: Option<&IShellView>) -> Result<()> {
+    fn OnViewWindowActive(&self, pshv: Option<&IShellView>) -> Result<()> {
+        *self.view.borrow_mut() = pshv.cloned();
         Ok(())
     }
     fn SetToolbarItems(&self, _lpbuttons: *const TBBUTTON, _nbuttons: u32, _uflags: u32) -> Result<()> {
