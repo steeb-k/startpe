@@ -12,6 +12,7 @@
 
 mod alttab;
 mod config;
+mod darkmode;
 mod desktop;
 mod menu;
 mod peek;
@@ -65,6 +66,10 @@ fn main() -> windows::core::Result<()> {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
         let cfg = config::Config::load();
+
+        // Put the process into dark app mode *before* any windows exist, so
+        // shell menus we raise (the hosted desktop's context menu) theme dark.
+        darkmode::init(cfg.dark_menus);
 
         // If Explorer can't bring up its own desktop (a PE whose modern-shell
         // packages are stripped, so its taskbar init fail-fasts), StartPE

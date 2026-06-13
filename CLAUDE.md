@@ -15,9 +15,12 @@ updated when behavior or config values change.
 ## Hard constraints (do not violate)
 
 - **Documented Win32 APIs only — in `startpe.exe`.** No undocumented internals
- in the main binary. (One pragmatic exception lives in `tray.rs`: the
- `Shell_NotifyIcon` WM_COPYDATA wire format is de-facto stable and used by
- every alternative shell.)
+ in the main binary. Two pragmatic, confined exceptions exist: (1) `tray.rs`,
+ the `Shell_NotifyIcon` WM_COPYDATA wire format (de-facto stable, used by every
+ alternative shell); (2) `darkmode.rs`, the uxtheme dark-mode ordinals used to
+ dark-theme the shell context menu we host — build-gated, behind the `DarkMenus`
+ config (default on), and fails closed to light menus. Keep any such ordinal
+ work confined to `darkmode.rs`; do not scatter undocumented calls elsewhere.
 - **`loader/` is the sandboxed exception.** `startpe_loader.dll` is loaded into
  `explorer.exe` (via a `Drive\shellex\FolderExtensions` COM registration) to
  keep Explorer's shell thread alive past the Win11 taskbar init on PE sources
@@ -50,7 +53,8 @@ updated when behavior or config values change.
   `tray.rs` (Shell_TrayWnd host, icon registrations, click forwarding),
   `peek.rs` (hover previews), `alttab.rs` (Win11-style Alt+Tab switcher: LL
   keyboard hook + `PrintWindow` screenshot grid), `menu.rs` (dark owner-drawn
-  popup menus), `config.rs` (registry), `util.rs` (UTF-16).
+  popup menus), `darkmode.rs` (uxtheme dark app mode for shell menus),
+  `config.rs` (registry), `util.rs` (UTF-16).
 - New user-facing settings: add to `config.rs` (registry value under
   `HKCU\Software\StartPE`), document in the `docs/ARCHITECTURE.md` table, and
   write the default in `pebakery/StartPE.script`. All three, every time.
