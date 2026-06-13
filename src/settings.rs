@@ -3,15 +3,16 @@
 //!
 //! StartPE has a fistful of registry-backed switches (see `config.rs`). This is
 //! the first slice of a real settings pane: the boolean toggles, grouped by the
-//! surface they affect (Taskbar / Desktop / Menus), with a checkbox each.
-//! Opened from the taskbar's right-click menu (Settings).
+//! surface they affect (Taskbar / Desktop / Menus), with a checkbox each, plus
+//! the Start button glyph color (preset swatches + a Custom… picker). Opened
+//! from the taskbar's right-click menu (Settings).
 //!
 //! It is a single owner-drawn GDI window in the same dark palette as the rest of
 //! StartPE — no common controls, no DWM dependency, so it renders the same in a
-//! plain PE as on a full desktop. Toggling a row writes the value to
-//! `HKCU\Software\StartPE` immediately (see [`config::save_bool`]) and asks the
-//! taskbar to re-read its config so layout switches apply live; the few that need
-//! the windows recreated (marked with †) take effect on the next launch.
+//! plain PE as on a full desktop. Changing a row writes the value to
+//! `HKCU\Software\StartPE` immediately (see [`config::save_bool`] / [`config::save_u32`])
+//! and asks the taskbar to re-read its config so it applies live; the few that
+//! need the windows recreated (marked with †) take effect on the next launch.
 
 use std::cell::RefCell;
 
@@ -19,6 +20,7 @@ use windows::core::w;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Controls::Dialogs::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -28,7 +30,8 @@ const WM_MOUSELEAVE: u32 = 0x02A3;
 
 use crate::config::{self, Config};
 use crate::taskbar::{
-    make_font, make_font_face, scaled, COL_ACCENT, COL_BG, COL_HOVER, COL_TEXT, COL_TEXT_DIM,
+    make_font, make_font_face, scaled, COL_ACCENT, COL_ACTIVE, COL_BG, COL_HOVER, COL_TEXT,
+    COL_TEXT_DIM,
 };
 use crate::util;
 
@@ -85,11 +88,45 @@ const TOGGLES: &[Toggle] = &[
     },
 ];
 
-/// A laid-out line in the pane: either a section heading or a toggle row.
+/// Build a `COLORREF` (0x00BBGGRR) from sRGB components, usable in const context.
+const fn rgb(r: u32, g: u32, b: u32) -> u32 {
+    r | (g << 8) | (b << 16)
+}
+
+/// Preset Start button glyph colors offered as swatches. The first is the
+/// default (near-white, matching the taskbar text); the rest are the usual
+/// Windows accent hues. A Custom… button covers everything else.
+const N_SWATCH: usize = 7;
+const SWATCHES: [u32; N_SWATCH] = [
+    rgb(240, 240, 240), // near-white (default)
+    rgb(0, 120, 212),   // blue
+    rgb(0, 178, 148),   // teal
+    rgb(16, 185, 110),  // green
+    rgb(255, 140, 0),   // orange
+    rgb(232, 17, 35),   // red
+    rgb(180, 90, 230),  // purple
+];
+
+/// A laid-out line in the pane: a section heading, a toggle row, or the Start
+/// button color row (swatches + Custom… button).
 enum Row {
     Header(&'static str),
     /// Index into [`TOGGLES`].
     Toggle(usize),
+    /// The Start button color picker.
+    Color,
+}
+
+/// What the cursor is over, for hover highlighting and click dispatch.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Hover {
+    None,
+    /// A toggle row, by `TOGGLES` index.
+    Toggle(usize),
+    /// A color swatch, by `SWATCHES` index.
+    Swatch(usize),
+    /// The Custom… color button.
+    Custom,
 }
 
 struct State {
@@ -97,8 +134,10 @@ struct State {
     rows: Vec<Row>,
     /// Current on/off value per `TOGGLES` index.
     values: Vec<bool>,
-    /// Index (into `TOGGLES`) of the toggle row under the cursor, or `None`.
-    hover: Option<usize>,
+    /// Current Start button glyph color (COLORREF 0x00BBGGRR).
+    start_color: u32,
+    /// What the cursor is currently over.
+    hover: Hover,
     tracking_mouse: bool,
     font: HFONT,
     font_header: HFONT,
@@ -119,6 +158,11 @@ const ROW_H: i32 = 36;
 const FOOTER_H: i32 = 30;
 const BOX: i32 = 18; // checkbox side length
 const CLOSE: i32 = 34; // close-button hit square in the title bar
+const COLOR_H: i32 = 48; // height of the Start button color row
+const SW: i32 = 22; // swatch side length
+const SW_GAP: i32 = 9; // gap between swatches
+const CUSTOM_W: i32 = 72; // Custom… button width
+const CUSTOM_H: i32 = 28; // Custom… button height
 
 // Segoe MDL2 Assets glyphs.
 const GLYPH_CHECK: u16 = 0xE73E; // CheckMark
@@ -164,6 +208,9 @@ pub fn open() {
             rows.push(Row::Toggle(i));
             values.push((t.get)(&cfg));
         }
+        // The Start button color picker, in its own section.
+        rows.push(Row::Header("Start button"));
+        rows.push(Row::Color);
 
         let height = content_height(&rows);
         let w = scaled(WIDTH);
@@ -177,7 +224,8 @@ pub fn open() {
                 hwnd: HWND::default(),
                 rows,
                 values,
-                hover: None,
+                start_color: cfg.start_button_color,
+                hover: Hover::None,
                 tracking_mouse: false,
                 font: make_font(scaled(14), 400),
                 font_header: make_font(scaled(12), 600),
@@ -226,7 +274,7 @@ fn log_open() {
     {
         let _ = writeln!(
             f,
-            "StartPE v{} settings pane opened ({} toggles)",
+            "StartPE v{} settings pane opened ({} toggles + start button color)",
             env!("CARGO_PKG_VERSION"),
             TOGGLES.len()
         );
@@ -239,51 +287,155 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().collect()
 }
 
+/// Filled rounded rectangle in `color` (the pen matches the fill, so the rounded
+/// edge has no hard 1px border). Plain GDI `RoundRect`, no DWM needed.
+fn fill_round(hdc: HDC, rc: &RECT, color: u32, radius: i32) {
+    unsafe {
+        let brush = CreateSolidBrush(COLORREF(color));
+        let pen = CreatePen(PS_SOLID, 1, COLORREF(color));
+        let ob = SelectObject(hdc, HGDIOBJ(brush.0));
+        let op = SelectObject(hdc, HGDIOBJ(pen.0));
+        let _ = RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, radius, radius);
+        SelectObject(hdc, ob);
+        SelectObject(hdc, op);
+        let _ = DeleteObject(HGDIOBJ(brush.0));
+        let _ = DeleteObject(HGDIOBJ(pen.0));
+    }
+}
+
 /// Total window height for a given row layout.
 fn content_height(rows: &[Row]) -> i32 {
     let mut y = scaled(TITLE_H);
     for r in rows {
-        y += match r {
-            Row::Header(_) => scaled(HEADER_H),
-            Row::Toggle(_) => scaled(ROW_H),
-        };
+        y += row_height(r);
     }
     y + scaled(FOOTER_H)
+}
+
+/// Laid-out height of a single row.
+fn row_height(row: &Row) -> i32 {
+    match row {
+        Row::Header(_) => scaled(HEADER_H),
+        Row::Toggle(_) => scaled(ROW_H),
+        Row::Color => scaled(COLOR_H),
+    }
 }
 
 /// Top edge (client-relative) of the row at `index` in `rows`.
 fn row_top(rows: &[Row], index: usize) -> i32 {
     let mut y = scaled(TITLE_H);
     for r in &rows[..index] {
-        y += match r {
-            Row::Header(_) => scaled(HEADER_H),
-            Row::Toggle(_) => scaled(ROW_H),
-        };
+        y += row_height(r);
     }
     y
 }
 
-/// The toggle index (into `TOGGLES`) whose row contains client point `(x, y)`,
-/// or `None`. Only toggle rows are hit-testable.
-fn hit_toggle(state: &State, x: i32, y: i32) -> Option<usize> {
+/// Swatch rects and the Custom… button rect for a color row at client `top`.
+/// Shared by paint and hit-testing so they can't drift apart.
+fn color_layout(top: i32) -> ([RECT; N_SWATCH], RECT) {
+    let sw = scaled(SW);
+    let gap = scaled(SW_GAP);
+    let sy = top + (scaled(COLOR_H) - sw) / 2;
+    let mut swatches = [RECT::default(); N_SWATCH];
+    let mut x = scaled(PAD);
+    for r in swatches.iter_mut() {
+        *r = RECT {
+            left: x,
+            top: sy,
+            right: x + sw,
+            bottom: sy + sw,
+        };
+        x += sw + gap;
+    }
+    // Custom… button: right-aligned, vertically centered in the row.
+    let bw = scaled(CUSTOM_W);
+    let bh = scaled(CUSTOM_H);
+    let by = top + (scaled(COLOR_H) - bh) / 2;
+    let custom = RECT {
+        left: scaled(WIDTH) - scaled(PAD) - bw,
+        top: by,
+        right: scaled(WIDTH) - scaled(PAD),
+        bottom: by + bh,
+    };
+    (swatches, custom)
+}
+
+/// True if client point `(x, y)` lies inside `r`.
+fn in_rect(r: &RECT, x: i32, y: i32) -> bool {
+    x >= r.left && x < r.right && y >= r.top && y < r.bottom
+}
+
+/// What the cursor is over at client point `(x, y)`.
+fn hit(state: &State, x: i32, y: i32) -> Hover {
     if x < 0 || x > scaled(WIDTH) {
-        return None;
+        return Hover::None;
     }
     for (i, r) in state.rows.iter().enumerate() {
-        if let Row::Toggle(t) = r {
-            let top = row_top(&state.rows, i);
-            if y >= top && y < top + scaled(ROW_H) {
-                return Some(*t);
+        let top = row_top(&state.rows, i);
+        match r {
+            Row::Toggle(t) => {
+                if y >= top && y < top + scaled(ROW_H) {
+                    return Hover::Toggle(*t);
+                }
             }
+            Row::Color => {
+                if y >= top && y < top + scaled(COLOR_H) {
+                    let (swatches, custom) = color_layout(top);
+                    if in_rect(&custom, x, y) {
+                        return Hover::Custom;
+                    }
+                    for (i, sr) in swatches.iter().enumerate() {
+                        if in_rect(sr, x, y) {
+                            return Hover::Swatch(i);
+                        }
+                    }
+                }
+            }
+            Row::Header(_) => {}
         }
     }
-    None
+    Hover::None
 }
 
 /// Whether client point `(x, y)` is on the title-bar close button.
 fn hit_close(x: i32, y: i32) -> bool {
     let w = scaled(WIDTH);
     x >= w - scaled(CLOSE) && y < scaled(CLOSE)
+}
+
+/// Persist the new Start button color and re-read it into the live taskbar
+/// (`draw_start_button` reads `cfg.start_button_color`, so it repaints recolored).
+fn apply_start_color(color: u32) {
+    config::save_u32("StartButtonColor", color);
+    crate::taskbar::reload_config();
+}
+
+thread_local! {
+    /// The user's custom colors for the picker, kept across openings.
+    static CUSTOM_COLORS: RefCell<[COLORREF; 16]> =
+        const { RefCell::new([COLORREF(0x00FF_FFFF); 16]) };
+}
+
+/// Open the standard Windows color dialog seeded with `current`; returns the
+/// chosen COLORREF (0x00BBGGRR) or `None` if cancelled. `ChooseColorW` is a
+/// documented comdlg32 dialog and runs its own modal loop (it disables `owner`
+/// while up), so callers must not hold the `STATE` borrow across it.
+fn pick_color(owner: HWND, current: u32) -> Option<u32> {
+    CUSTOM_COLORS.with_borrow_mut(|custom| unsafe {
+        let mut cc = CHOOSECOLORW {
+            lStructSize: std::mem::size_of::<CHOOSECOLORW>() as u32,
+            hwndOwner: owner,
+            rgbResult: COLORREF(current),
+            lpCustColors: custom.as_mut_ptr(),
+            Flags: CC_RGBINIT | CC_FULLOPEN | CC_ANYCOLOR,
+            ..Default::default()
+        };
+        if ChooseColorW(&mut cc).as_bool() {
+            Some(cc.rgbResult.0)
+        } else {
+            None
+        }
+    })
 }
 
 fn paint(state: &State) {
@@ -381,7 +533,7 @@ fn paint(state: &State) {
                         right: width,
                         bottom: top + scaled(ROW_H),
                     };
-                    if state.hover == Some(*t) {
+                    if state.hover == Hover::Toggle(*t) {
                         let hov = CreateSolidBrush(COLORREF(COL_HOVER));
                         FillRect(mem, &row, hov);
                         let _ = DeleteObject(HGDIOBJ(hov.0));
@@ -447,6 +599,44 @@ fn paint(state: &State) {
                         &mut text,
                         &mut lr,
                         DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX,
+                    );
+                }
+                Row::Color => {
+                    let (swatches, custom) = color_layout(top);
+                    for (si, sr) in swatches.iter().enumerate() {
+                        let color = SWATCHES[si];
+                        let selected = state.start_color == color;
+                        let hovered = state.hover == Hover::Swatch(si);
+                        // Selection ring (accent) or hover ring (dim) behind the swatch.
+                        if selected || hovered {
+                            let rr = RECT {
+                                left: sr.left - scaled(3),
+                                top: sr.top - scaled(3),
+                                right: sr.right + scaled(3),
+                                bottom: sr.bottom + scaled(3),
+                            };
+                            let ring = if selected { COL_ACCENT } else { COL_TEXT_DIM };
+                            fill_round(mem, &rr, ring, scaled(6));
+                        }
+                        fill_round(mem, sr, color, scaled(5));
+                    }
+
+                    // Custom… button (pill).
+                    let cust_bg = if state.hover == Hover::Custom {
+                        COL_ACTIVE
+                    } else {
+                        COL_HOVER
+                    };
+                    fill_round(mem, &custom, cust_bg, scaled(8));
+                    SelectObject(mem, HGDIOBJ(state.font.0));
+                    SetTextColor(mem, COLORREF(COL_TEXT));
+                    let mut label = wide("Custom\u{2026}");
+                    let mut cr = custom;
+                    DrawTextW(
+                        mem,
+                        &mut label,
+                        &mut cr,
+                        DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX,
                     );
                 }
             }
@@ -515,7 +705,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     let _ = TrackMouseEvent(&mut tme);
                     s.tracking_mouse = true;
                 }
-                let hov = hit_toggle(s, x, y);
+                let hov = hit(s, x, y);
                 if hov != s.hover {
                     s.hover = hov;
                     true
@@ -532,8 +722,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let changed = STATE.with_borrow_mut(|s| {
                 s.as_mut().is_some_and(|s| {
                     s.tracking_mouse = false;
-                    let had = s.hover.is_some();
-                    s.hover = None;
+                    let had = s.hover != Hover::None;
+                    s.hover = Hover::None;
                     had
                 })
             });
@@ -560,19 +750,56 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let _ = DestroyWindow(hwnd);
                 return LRESULT(0);
             }
-            // Resolve which setting to flip under the borrow, then act (the
-            // registry write + taskbar reload) after dropping it.
-            let flipped = STATE.with_borrow_mut(|s| {
-                let s = s.as_mut()?;
-                let t = hit_toggle(s, x, y)?;
-                let now = !s.values[t];
-                s.values[t] = now;
-                Some((TOGGLES[t].reg, now))
+            // Resolve what was clicked under the borrow; perform the side effects
+            // (registry write, taskbar reload, the modal color dialog) after
+            // dropping it, since they pump messages and re-enter this wndproc.
+            enum Act {
+                Toggle(&'static str, bool),
+                SetColor(u32),
+                /// Open the Custom… picker seeded with this color.
+                PickColor(u32),
+                None,
+            }
+            let act = STATE.with_borrow_mut(|s| {
+                let Some(s) = s.as_mut() else {
+                    return Act::None;
+                };
+                match hit(s, x, y) {
+                    Hover::Toggle(t) => {
+                        let now = !s.values[t];
+                        s.values[t] = now;
+                        Act::Toggle(TOGGLES[t].reg, now)
+                    }
+                    Hover::Swatch(i) => {
+                        s.start_color = SWATCHES[i];
+                        Act::SetColor(SWATCHES[i])
+                    }
+                    Hover::Custom => Act::PickColor(s.start_color),
+                    Hover::None => Act::None,
+                }
             });
-            if let Some((reg, now)) = flipped {
-                config::save_bool(reg, now);
-                crate::taskbar::reload_config();
-                let _ = InvalidateRect(hwnd, None, false);
+            match act {
+                Act::Toggle(reg, now) => {
+                    config::save_bool(reg, now);
+                    crate::taskbar::reload_config();
+                    let _ = InvalidateRect(hwnd, None, false);
+                }
+                Act::SetColor(color) => {
+                    apply_start_color(color);
+                    let _ = InvalidateRect(hwnd, None, false);
+                }
+                Act::PickColor(current) => {
+                    if let Some(color) = pick_color(hwnd, current) {
+                        STATE.with_borrow_mut(|s| {
+                            if let Some(s) = s.as_mut() {
+                                s.start_color = color;
+                            }
+                        });
+                        apply_start_color(color);
+                    }
+                    let _ = InvalidateRect(hwnd, None, false);
+                }
+                Act::None => {}
             }
             LRESULT(0)
         }
