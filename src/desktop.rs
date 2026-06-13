@@ -889,9 +889,26 @@ unsafe fn paint_background(hwnd: HWND, hdc: HDC) {
                 Some(&mut bm as *mut _ as *mut c_void),
             );
             SetStretchBltMode(hdc, HALFTONE);
-            let _ = StretchBlt(
-                hdc, 0, 0, rc.right, rc.bottom, mem, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY,
-            );
+            // "Fill" (cover): preserve aspect ratio and center-crop the overflow,
+            // instead of stretching the whole bitmap to the client (which
+            // distorts). Pick the centered source sub-rect whose aspect matches
+            // the destination, then stretch that to the full client.
+            let (dw, dh) = (rc.right, rc.bottom);
+            let (bw, bh) = (bm.bmWidth, bm.bmHeight);
+            let (sx, sy, sw, sh) = if dw > 0 && dh > 0 && bw > 0 && bh > 0 {
+                if bw as i64 * dh as i64 > dw as i64 * bh as i64 {
+                    // Source is wider than the client: crop its sides.
+                    let crop_w = bh * dw / dh;
+                    ((bw - crop_w) / 2, 0, crop_w, bh)
+                } else {
+                    // Source is taller than the client: crop top/bottom.
+                    let crop_h = bw * dh / dw;
+                    (0, (bh - crop_h) / 2, bw, crop_h)
+                }
+            } else {
+                (0, 0, bw, bh)
+            };
+            let _ = StretchBlt(hdc, 0, 0, dw, dh, mem, sx, sy, sw, sh, SRCCOPY);
             SelectObject(mem, old);
             let _ = DeleteDC(mem);
         } else {

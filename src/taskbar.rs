@@ -10,6 +10,9 @@ use std::collections::HashMap;
 
 use windows::core::{w, Result, PCWSTR, PWSTR};
 use windows::Win32::Foundation::*;
+use windows::Win32::Globalization::{
+    GetDateFormatEx, GetTimeFormatEx, DATE_SHORTDATE, TIME_NOSECONDS,
+};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
 use windows::Win32::Graphics::Gdi::*;
@@ -56,6 +59,7 @@ enum Hit {
     Start,
     Task(usize),
     TrayIcon(usize),
+    ShowDesktop,
 }
 
 /// Width reserved per tray icon (unscaled).
@@ -163,8 +167,29 @@ impl Taskbar {
                 None,
             )?;
 
+            log_features(cfg);
             Ok(Taskbar { hwnd })
         }
+    }
+}
+
+/// Version-stamped record of the taskbar feature config, so a PE log shows
+/// which binary (and which settings) is actually running. PE has no Event
+/// Viewer, and the user iterates by rebuilding the image.
+fn log_features(cfg: &Config) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("X:\\startpe.log")
+    {
+        let _ = writeln!(
+            f,
+            "StartPE v{} taskbar: rounded buttons, show-desktop button, \
+             locale clock, StartButtonColor=0x{:06X}",
+            env!("CARGO_PKG_VERSION"),
+            cfg.start_button_color
+        );
     }
 }
 
@@ -673,16 +698,22 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
 // ---------------------------------------------------------------------------
 // Layout
 
-fn start_width() -> i32 {
-    scaled(64)
+/// Horizontal space the start button occupies. Matches the icon-only task
+/// button square (`height + scaled(8)`) so the start button reads as just
+/// another taskbar icon rather than an oversized slab.
+fn start_width(height: i32) -> i32 {
+    height + scaled(8)
 }
 
+/// Drawn/hit rect of the start button: a square inset vertically by the same
+/// `scaled(3)` margin as the task buttons, so its hover background lines up
+/// with theirs. Hit-testing only checks the x range, so the inset is cosmetic.
 fn start_rect_at(x: i32, height: i32) -> RECT {
     RECT {
         left: x,
-        top: 0,
-        right: x + start_width(),
-        bottom: height,
+        top: scaled(3),
+        right: x + start_width(height),
+        bottom: height - scaled(3),
     }
 }
 
@@ -721,11 +752,26 @@ fn show_peek(index: usize) {
     }
 }
 
-fn clock_rect(width: i32, height: i32) -> RECT {
+/// Width of the show-desktop sliver at the far right edge (unscaled).
+const SHOW_DESKTOP_SLIVER: i32 = 12;
+
+/// The thin "show desktop / minimize all" button pinned to the far right edge,
+/// like the Windows peek button.
+fn show_desktop_rect(width: i32, height: i32) -> RECT {
     RECT {
-        left: width - scaled(86),
+        left: width - scaled(SHOW_DESKTOP_SLIVER),
         top: 0,
         right: width,
+        bottom: height,
+    }
+}
+
+fn clock_rect(width: i32, height: i32) -> RECT {
+    let right = width - scaled(SHOW_DESKTOP_SLIVER);
+    RECT {
+        left: right - scaled(86),
+        top: 0,
+        right,
         bottom: height,
     }
 }
@@ -833,7 +879,7 @@ fn refresh_buttons(state: &mut State) {
         let (width, height) = client_size(state.hwnd);
         state.tray_icons = crate::tray::snapshot();
         let right_bound = tray_area_left(state.tray_icons.len(), width, height);
-        let avail = (right_bound - scaled(8) - start_width() - scaled(4)).max(0);
+        let avail = (right_bound - scaled(8) - start_width(height) - scaled(4)).max(0);
         let n = buttons.len() as i32;
         let max_w = if state.cfg.show_labels {
             scaled(state.cfg.button_max_width)
@@ -845,7 +891,7 @@ fn refresh_buttons(state: &mut State) {
 
         // Win11-style: center start button + task buttons as one cluster
         // (clamped so it never slides under the tray/clock).
-        let cluster_w = start_width() + scaled(4) + n * bw;
+        let cluster_w = start_width(height) + scaled(4) + n * bw;
         let max_left = (right_bound - scaled(4) - cluster_w).max(scaled(4));
         state.start_x = if state.cfg.center_taskbar {
             ((width - cluster_w) / 2).clamp(scaled(4), max_left)
@@ -853,7 +899,7 @@ fn refresh_buttons(state: &mut State) {
             scaled(0)
         };
 
-        let tasks_left = state.start_x + start_width() + scaled(4);
+        let tasks_left = state.start_x + start_width(height) + scaled(4);
         for (i, b) in buttons.iter_mut().enumerate() {
             let x = tasks_left + bw * i as i32;
             b.rect = RECT {
@@ -882,6 +928,38 @@ fn launch_path(path: &str) {
     }
 }
 
+/// Right-click on empty taskbar: a small context menu with the system admin
+/// tools most useful in a PE. Resolved-then-acted outside any STATE borrow.
+fn show_taskbar_menu(hwnd: HWND) {
+    unsafe {
+        let Ok(menu) = CreatePopupMenu() else {
+            return;
+        };
+        let _ = AppendMenuW(menu, MF_STRING, 1, w!("Task Manager"));
+        let _ = AppendMenuW(menu, MF_STRING, 2, w!("Computer Management"));
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        // Required so the menu dismisses on an outside click even though our
+        // appbar is WS_EX_NOACTIVATE.
+        let _ = SetForegroundWindow(hwnd);
+        let cmd = TrackPopupMenu(
+            menu,
+            TPM_RIGHTBUTTON | TPM_RETURNCMD,
+            pt.x,
+            pt.y,
+            0,
+            hwnd,
+            None,
+        );
+        let _ = DestroyMenu(menu);
+        match cmd.0 {
+            1 => run("taskmgr.exe", ""),
+            2 => run("mmc.exe", "compmgmt.msc"),
+            _ => {}
+        }
+    }
+}
+
 fn hit_test(state: &State, x: i32, y: i32) -> Hit {
     let (width, height) = client_size(state.hwnd);
     let sr = start_rect_at(state.start_x, height);
@@ -899,6 +977,10 @@ fn hit_test(state: &State, x: i32, y: i32) -> Hit {
         if x >= r.left && x < r.right {
             return Hit::TrayIcon(i);
         }
+    }
+    let sd = show_desktop_rect(width, height);
+    if x >= sd.left && x < sd.right {
+        return Hit::ShowDesktop;
     }
     Hit::None
 }
@@ -974,6 +1056,7 @@ fn paint(state: &State) {
         draw_task_buttons(state, mem);
         draw_tray(state, mem, width, height);
         draw_clock(state, mem, width, height);
+        draw_show_desktop(state, mem, width, height);
 
         let _ = BitBlt(hdc, 0, 0, width, height, mem, 0, 0, SRCCOPY);
         SelectObject(mem, old_bmp);
@@ -991,13 +1074,31 @@ fn fill(hdc: HDC, rect: &RECT, color: u32) {
     }
 }
 
+/// Filled rounded rectangle (plain GDI `RoundRect`, no DWM needed). The pen
+/// matches the fill so the rounded edge has no hard 1px border. `radius` is the
+/// corner diameter in device pixels.
+fn fill_rounded(hdc: HDC, rect: &RECT, color: u32, radius: i32) {
+    unsafe {
+        let brush = CreateSolidBrush(COLORREF(color));
+        let pen = CreatePen(PS_SOLID, 1, COLORREF(color));
+        let old_brush = SelectObject(hdc, brush);
+        let old_pen = SelectObject(hdc, pen);
+        let _ = RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, radius, radius);
+        SelectObject(hdc, old_brush);
+        SelectObject(hdc, old_pen);
+        let _ = DeleteObject(brush);
+        let _ = DeleteObject(pen);
+    }
+}
+
 fn draw_start_button(state: &State, hdc: HDC, height: i32) {
     {
         let rect = start_rect_at(state.start_x, height);
         if state.hover == Hit::Start {
-            fill(hdc, &rect, COL_HOVER);
+            fill_rounded(hdc, &rect, COL_HOVER, scaled(8));
         }
-        // Four-square logo, centered.
+        // Four-square logo, centered. Color is configurable (StartButtonColor).
+        let glyph = state.cfg.start_button_color;
         let sq = scaled(7);
         let gap = scaled(2);
         let total = sq * 2 + gap;
@@ -1010,7 +1111,7 @@ fn draw_start_button(state: &State, hdc: HDC, height: i32) {
                 right: cx + dx + sq,
                 bottom: cy + dy + sq,
             };
-            fill(hdc, &r, COL_TEXT);
+            fill(hdc, &r, glyph);
         }
     }
 }
@@ -1022,9 +1123,9 @@ fn draw_task_buttons(state: &State, hdc: HDC) {
         for (i, b) in state.buttons.iter().enumerate() {
             let active = b.windows.contains(&foreground);
             if active {
-                fill(hdc, &b.rect, COL_ACTIVE);
+                fill_rounded(hdc, &b.rect, COL_ACTIVE, scaled(8));
             } else if state.hover == Hit::Task(i) {
-                fill(hdc, &b.rect, COL_HOVER);
+                fill_rounded(hdc, &b.rect, COL_HOVER, scaled(8));
             }
 
             // Underline indicator: dim when running, accent when active, split
@@ -1134,21 +1235,58 @@ fn draw_tray(state: &State, hdc: HDC, width: i32, height: i32) {
     }
 }
 
+/// Locale-formatted time without seconds (e.g. "10:30 AM" or "22:30"), exactly
+/// as the standard Windows clock shows it. Falls back to ISO on failure.
+fn locale_time() -> String {
+    unsafe {
+        let mut buf = [0u16; 64];
+        let n = GetTimeFormatEx(PCWSTR::null(), TIME_NOSECONDS, None, PCWSTR::null(), Some(&mut buf));
+        if n > 1 {
+            return String::from_utf16_lossy(&buf[..(n - 1) as usize]);
+        }
+        let st = GetLocalTime();
+        format!("{:02}:{:02}", st.wHour, st.wMinute)
+    }
+}
+
+/// Locale short date (e.g. "6/13/2026"). Falls back to ISO on failure.
+fn locale_date() -> String {
+    unsafe {
+        let mut buf = [0u16; 64];
+        let n = GetDateFormatEx(
+            PCWSTR::null(),
+            DATE_SHORTDATE,
+            None,
+            PCWSTR::null(),
+            Some(&mut buf),
+            PCWSTR::null(),
+        );
+        if n > 1 {
+            return String::from_utf16_lossy(&buf[..(n - 1) as usize]);
+        }
+        let st = GetLocalTime();
+        format!("{:04}-{:02}-{:02}", st.wYear, st.wMonth, st.wDay)
+    }
+}
+
 fn draw_clock(state: &State, hdc: HDC, width: i32, height: i32) {
     unsafe {
         let rect = clock_rect(width, height);
-        let st = GetLocalTime();
+        let time = locale_time();
+        let date = locale_date();
 
-        let time = format!("{:02}:{:02}", st.wHour, st.wMinute);
-        let date = format!("{:04}-{:02}-{:02}", st.wYear, st.wMonth, st.wDay);
+        // Two right-aligned lines centered as a block: time (bright) over date
+        // (dim), matching the standard Windows taskbar clock.
+        let mid = (rect.top + rect.bottom) / 2;
+        let right = rect.right - scaled(8);
 
         SetTextColor(hdc, COLORREF(COL_TEXT));
         let old_font = SelectObject(hdc, state.font);
         let mut tr = RECT {
             left: rect.left,
-            top: rect.top + scaled(3),
-            right: rect.right - scaled(8),
-            bottom: rect.top + height / 2,
+            top: rect.top,
+            right,
+            bottom: mid,
         };
         let mut time_w = util::wide(&time);
         time_w.pop();
@@ -1158,15 +1296,32 @@ fn draw_clock(state: &State, hdc: HDC, width: i32, height: i32) {
         SelectObject(hdc, state.font_small);
         let mut dr = RECT {
             left: rect.left,
-            top: height / 2,
-            right: rect.right - scaled(8),
-            bottom: rect.bottom - scaled(3),
+            top: mid + scaled(1),
+            right,
+            bottom: rect.bottom,
         };
         let mut date_w = util::wide(&date);
         date_w.pop();
         DrawTextW(hdc, &mut date_w, &mut dr, DT_SINGLELINE | DT_RIGHT | DT_TOP);
         SelectObject(hdc, old_font);
     }
+}
+
+/// The far-right show-desktop sliver: a thin separator with a hover highlight,
+/// like the Windows "peek at desktop" button.
+fn draw_show_desktop(state: &State, hdc: HDC, width: i32, height: i32) {
+    let r = show_desktop_rect(width, height);
+    if state.hover == Hit::ShowDesktop {
+        fill(hdc, &r, COL_HOVER);
+    }
+    // Thin vertical separator on the left edge of the sliver.
+    let sep = RECT {
+        left: r.left,
+        top: scaled(6),
+        right: r.left + 1,
+        bottom: height - scaled(6),
+    };
+    fill(hdc, &sep, COL_TEXT_DIM);
 }
 
 // ---------------------------------------------------------------------------
@@ -1312,6 +1467,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 Group(Vec<HWND>),
                 Launch(String),
                 Tray(usize),
+                ShowDesktop,
             }
             // Resolve the action inside the borrow, perform it outside: the
             // action may pump messages that re-enter this wndproc.
@@ -1333,6 +1489,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                         None => Click::None,
                     },
                     Hit::TrayIcon(i) => Click::Tray(i),
+                    Hit::ShowDesktop => Click::ShowDesktop,
                     Hit::None => Click::None,
                 }
             });
@@ -1342,6 +1499,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 Click::Group(windows) => activate_group(&windows),
                 Click::Launch(exe) => launch_path(&exe),
                 Click::Tray(i) => crate::tray::click(i, false),
+                Click::ShowDesktop => toggle_show_desktop(),
                 Click::None => {}
             }
             let _ = InvalidateRect(hwnd, None, false);
@@ -1350,14 +1508,24 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_RBUTTONUP => {
             let x = util::loword(lparam.0);
             let y = util::hiword(lparam.0);
-            let tray_hit = STATE.with_borrow(|s| {
-                s.as_ref().and_then(|s| match hit_test(s, x, y) {
-                    Hit::TrayIcon(i) => Some(i),
-                    _ => None,
+            // Resolve under the borrow, act outside it (TrackPopupMenu and the
+            // tray forward both pump messages and re-enter this wndproc).
+            enum RClick {
+                None,
+                Tray(usize),
+                Menu,
+            }
+            let action = STATE.with_borrow(|s| {
+                s.as_ref().map_or(RClick::None, |s| match hit_test(s, x, y) {
+                    Hit::TrayIcon(i) => RClick::Tray(i),
+                    Hit::None => RClick::Menu,
+                    _ => RClick::None,
                 })
             });
-            if let Some(i) = tray_hit {
-                crate::tray::click(i, true);
+            match action {
+                RClick::Tray(i) => crate::tray::click(i, true),
+                RClick::Menu => show_taskbar_menu(hwnd),
+                RClick::None => {}
             }
             LRESULT(0)
         }
