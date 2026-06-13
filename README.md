@@ -71,8 +71,13 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the roadmap
 - Windows 11-style **Alt+Tab** switcher (centered overlay, `PrintWindow`
   screenshots, no DWM dependency).
 - The **Win key** opens the StartPE menu; **Win+R** (Run), **Win+E** (Explorer),
-  and **Win+D** (show desktop) are handled directly (other Win combos pass
-  through).
+  **Win+D** (show desktop), and **Win+X** (power-user menu) are handled directly
+  (other Win combos pass through).
+- A Windows 11-style **power-user menu** (Win+X, or right-click the start button):
+  Event Viewer, System (msinfo32), Device Manager, Disk Management, Computer
+  Management, Terminal (the default `%ComSpec%` processor), Task Manager, File
+  Explorer, Run, a Shut down / Restart flyout, and Desktop — the PE-relevant
+  subset of the Windows 11 menu.
 
 ### Dark theming
 - Dark, owner-drawn popup menus (taskbar context menu, power flyout).

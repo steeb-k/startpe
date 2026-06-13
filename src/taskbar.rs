@@ -37,6 +37,7 @@ const MSG_HOTKEY: u32 = WM_APP + 4;
 const HOTKEY_RUN: u32 = 1;
 const HOTKEY_EXPLORER: u32 = 2;
 const HOTKEY_DESKTOP: u32 = 3;
+const HOTKEY_WINX: u32 = 4;
 const TIMER_PEEK: usize = 3;
 // Defined in the Win32_UI_Controls module of windows-rs; declared here to
 // avoid pulling in that entire feature for one constant.
@@ -185,7 +186,7 @@ fn log_features(cfg: &Config) {
         let _ = writeln!(
             f,
             "StartPE v{} taskbar: rounded buttons, show-desktop button, \
-             locale clock, StartButtonColor=0x{:06X}",
+             Win+X power menu, locale clock, StartButtonColor=0x{:06X}",
             env!("CARGO_PKG_VERSION"),
             cfg.start_button_color
         );
@@ -404,6 +405,7 @@ fn win_hotkey(vk: u32) -> Option<u32> {
         0x52 => Some(HOTKEY_RUN),      // R — Run dialog
         0x45 => Some(HOTKEY_EXPLORER), // E — file explorer
         0x44 => Some(HOTKEY_DESKTOP),  // D — show desktop (toggle)
+        0x58 => Some(HOTKEY_WINX),     // X — Win+X power-user menu
         _ => None,
     }
 }
@@ -960,6 +962,79 @@ fn show_taskbar_menu(hwnd: HWND) {
         3 => crate::settings::open(),
         _ => {}
     }
+}
+
+/// The "power user" (Win+X) menu — opened by Win+X and by right-clicking the
+/// start button. A trimmed version of the Windows 11 menu: only the entries that
+/// make sense on a PE (system/admin tools, Terminal, the power flyout), anchored
+/// above the start button and bottom-aligned so it grows upward. Resolved-then-
+/// acted outside any STATE borrow (TrackPopupMenu pumps messages and re-enters
+/// the wndproc). `select_first` pre-highlights the top item for keyboard opening.
+fn show_winx_menu(hwnd: HWND, select_first: bool) {
+    use crate::menu::Item;
+    // Anchor at the start button's top-left in screen space; the menu is
+    // bottom-aligned there so it opens up above the taskbar like the real one.
+    let anchor = STATE.with_borrow(|s| {
+        let s = s.as_ref()?;
+        let mut wr = RECT::default();
+        unsafe {
+            GetWindowRect(s.hwnd, &mut wr).ok()?;
+        }
+        let r = start_rect_at(s.start_x, scaled(s.cfg.taskbar_height));
+        Some((wr.left + r.left, wr.top))
+    });
+    let Some((x, y)) = anchor else { return };
+
+    // Power flyout — Restart / Shut down, matching the start menu's flyout.
+    let power = [Item::Entry(20, "Restart"), Item::Entry(21, "Shut down")];
+    let items = [
+        Item::Entry(10, "Event Viewer"),
+        Item::Entry(11, "System"),
+        Item::Entry(12, "Device Manager"),
+        Item::Entry(13, "Disk Management"),
+        Item::Entry(14, "Computer Management"),
+        Item::Entry(15, "Terminal"),
+        Item::Separator,
+        Item::Entry(16, "Task Manager"),
+        Item::Entry(17, "File Explorer"),
+        Item::Entry(18, "Run"),
+        Item::Separator,
+        Item::Submenu("Shut down or sign out", &power),
+        Item::Entry(22, "Desktop"),
+    ];
+    let cmd = crate::menu::track_items(hwnd, x, y, TPM_BOTTOMALIGN, &items, select_first);
+    match cmd {
+        10 => run("eventvwr.exe", ""),
+        11 => run("msinfo32.exe", ""),
+        12 => run("mmc.exe", "devmgmt.msc"),
+        13 => run("mmc.exe", "diskmgmt.msc"),
+        14 => run("mmc.exe", "compmgmt.msc"),
+        15 => {
+            let term = default_terminal();
+            run(&term, "");
+        }
+        16 => run("taskmgr.exe", ""),
+        17 => run("explorer.exe", "shell:MyComputerFolder"),
+        18 => {
+            let mut rc = RECT::default();
+            unsafe {
+                let _ = GetWindowRect(hwnd, &mut rc);
+            }
+            crate::run_dialog::show(rc.top);
+        }
+        20 => run("wpeutil.exe", "reboot"),
+        21 => run("wpeutil.exe", "shutdown"),
+        22 => unsafe { toggle_show_desktop() },
+        _ => {}
+    }
+}
+
+/// The default registered command processor for the Terminal entry. `%ComSpec%`
+/// is the documented "command processor" handle (cmd.exe out of the box; a PE
+/// can point it at PowerShell), so honoring it does the right thing without
+/// hard-coding a shell. Falls back to cmd.exe if the variable is unset.
+fn default_terminal() -> String {
+    std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string())
 }
 
 /// Whether the start button + task buttons are centered (vs left-aligned). Read
@@ -1554,10 +1629,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 None,
                 Tray(usize),
                 Menu,
+                WinX,
             }
             let action = STATE.with_borrow(|s| {
                 s.as_ref().map_or(RClick::None, |s| match hit_test(s, x, y) {
                     Hit::TrayIcon(i) => RClick::Tray(i),
+                    Hit::Start => RClick::WinX,
                     Hit::None => RClick::Menu,
                     _ => RClick::None,
                 })
@@ -1565,6 +1642,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             match action {
                 RClick::Tray(i) => crate::tray::click(i, true),
                 RClick::Menu => show_taskbar_menu(hwnd),
+                RClick::WinX => show_winx_menu(hwnd, false),
                 RClick::None => {}
             }
             LRESULT(0)
@@ -1583,6 +1661,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 }
                 HOTKEY_EXPLORER => run("explorer.exe", "shell:MyComputerFolder"),
                 HOTKEY_DESKTOP => toggle_show_desktop(),
+                HOTKEY_WINX => show_winx_menu(hwnd, true),
                 _ => {}
             }
             LRESULT(0)
