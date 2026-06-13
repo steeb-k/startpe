@@ -26,7 +26,8 @@ StartAllBack restyles Explorer's taskbar in-process. StartPE instead:
    and Win-up) so Explorer's start menu never triggers; our menu opens
    instead. Win+<key> shortcuts are handled by StartPE itself (there is no
    working shell on these PE images to handle them): Win+R (Run), Win+E (file
-   explorer), Win+D (show desktop). Other Win+<key> combos pass through.
+   explorer), Win+D (show desktop), Win+X (the power-user menu — also opened by
+   right-clicking the start button). Other Win+<key> combos pass through.
 
 Note on hiding Explorer's taskbar: hiding the `Shell_TrayWnd` window is not
 enough, because its appbar *work-area reservation* survives and leaves a dead
@@ -73,8 +74,12 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   icon/title rows otherwise)
 - `src/menu.rs` — dark owner-drawn popup menus (`MF_OWNERDRAW` + forwarded
   `WM_MEASUREITEM`/`WM_DRAWITEM`), since plain `HMENU`s can only be darkened via
-  undocumented uxtheme ordinals. Used by the taskbar right-click menu and the
-  start menu's power flyout
+  undocumented uxtheme ordinals. Items can be entries, separators, or `MF_POPUP`
+  submenus (flyouts, drawn with a right-edge chevron). Used by the taskbar
+  right-click menu, the start menu's power flyout, and the Win+X power-user menu
+  (`taskbar::show_winx_menu`: a PE-trimmed Win11 power menu — system/admin tools,
+  Terminal at `%ComSpec%`, Run, the power flyout — opened by Win+X or by
+  right-clicking the start button)
 - `src/run_dialog.rs` — the shell Run dialog done right: calls shell32's
   `RunFileDlg` (ordinal 61) directly with a proper icon + prompt (vs the
   iconless "RunDLL" box `rundll32 shell32.dll,#61` produces) and a one-shot
