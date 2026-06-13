@@ -931,32 +931,21 @@ fn launch_path(path: &str) {
 /// Right-click on empty taskbar: a small context menu with the system admin
 /// tools most useful in a PE. Resolved-then-acted outside any STATE borrow.
 fn show_taskbar_menu(hwnd: HWND) {
+    let mut pt = POINT::default();
     unsafe {
-        let Ok(menu) = CreatePopupMenu() else {
-            return;
-        };
-        let _ = AppendMenuW(menu, MF_STRING, 1, w!("Task Manager"));
-        let _ = AppendMenuW(menu, MF_STRING, 2, w!("Computer Management"));
-        let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
-        // Required so the menu dismisses on an outside click even though our
-        // appbar is WS_EX_NOACTIVATE.
-        let _ = SetForegroundWindow(hwnd);
-        let cmd = TrackPopupMenu(
-            menu,
-            TPM_RIGHTBUTTON | TPM_RETURNCMD,
-            pt.x,
-            pt.y,
-            0,
-            hwnd,
-            None,
-        );
-        let _ = DestroyMenu(menu);
-        match cmd.0 {
-            1 => run("taskmgr.exe", ""),
-            2 => run("mmc.exe", "compmgmt.msc"),
-            _ => {}
-        }
+    }
+    let cmd = crate::menu::track(
+        hwnd,
+        pt.x,
+        pt.y,
+        TRACK_POPUP_MENU_FLAGS(0),
+        &[(1, "Task Manager"), (2, "Computer Management")],
+    );
+    match cmd {
+        1 => run("taskmgr.exe", ""),
+        2 => run("mmc.exe", "compmgmt.msc"),
+        _ => {}
     }
 }
 
@@ -1550,6 +1539,20 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             });
             let _ = InvalidateRect(hwnd, None, false);
             LRESULT(0)
+        }
+        WM_MEASUREITEM => {
+            if crate::menu::on_measure(lparam) {
+                LRESULT(1)
+            } else {
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+        }
+        WM_DRAWITEM => {
+            if crate::menu::on_draw(lparam) {
+                LRESULT(1)
+            } else {
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
         }
         WM_PAINT => {
             STATE.with_borrow(|s| {

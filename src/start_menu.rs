@@ -992,33 +992,27 @@ fn exec(cmd: &str, args: &str) {
 
 /// Restart / Shut down flyout for the chevron next to the Shut down button.
 fn shutdown_flyout(hwnd: HWND) {
+    let mut pt = POINT::default();
     unsafe {
-        let Ok(menu) = CreatePopupMenu() else { return };
-        let _ = AppendMenuW(menu, MF_STRING, 1, w!("Restart"));
-        let _ = AppendMenuW(menu, MF_STRING, 2, w!("Shut down"));
-        let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
-        let cmd = TrackPopupMenu(
-            menu,
-            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,
-            pt.x,
-            pt.y,
-            0,
-            hwnd,
-            None,
-        );
-        let _ = DestroyMenu(menu);
-        match cmd.0 {
-            1 => {
-                hide(hwnd);
-                exec("wpeutil.exe", "reboot");
-            }
-            2 => {
-                hide(hwnd);
-                exec("wpeutil.exe", "shutdown");
-            }
-            _ => {}
+    }
+    let cmd = crate::menu::track(
+        hwnd,
+        pt.x,
+        pt.y,
+        TPM_BOTTOMALIGN,
+        &[(1, "Restart"), (2, "Shut down")],
+    );
+    match cmd {
+        1 => {
+            hide(hwnd);
+            exec("wpeutil.exe", "reboot");
         }
+        2 => {
+            hide(hwnd);
+            exec("wpeutil.exe", "shutdown");
+        }
+        _ => {}
     }
 }
 
@@ -1187,6 +1181,20 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 Action::None => {}
             }
             LRESULT(0)
+        }
+        WM_MEASUREITEM => {
+            if crate::menu::on_measure(lparam) {
+                LRESULT(1)
+            } else {
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+        }
+        WM_DRAWITEM => {
+            if crate::menu::on_draw(lparam) {
+                LRESULT(1)
+            } else {
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
         }
         WM_PAINT => {
             MENU.with_borrow(|m| {
