@@ -24,7 +24,9 @@ StartAllBack restyles Explorer's taskbar in-process. StartPE instead:
 5. Captures bare Win-key taps with a `WH_KEYBOARD_LL` hook: the key-up is
    swallowed and replaced with synthetic input (dummy key between Win-down
    and Win-up) so Explorer's start menu never triggers; our menu opens
-   instead. Win+<key> combos pass through untouched.
+   instead. Win+<key> shortcuts are handled by StartPE itself (there is no
+   working shell on these PE images to handle them): Win+R (Run), Win+E (file
+   explorer), Win+D (show desktop). Other Win+<key> combos pass through.
 
 Note on hiding Explorer's taskbar: hiding the `Shell_TrayWnd` window is not
 enough, because its appbar *work-area reservation* survives and leaves a dead

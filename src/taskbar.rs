@@ -29,6 +29,12 @@ use crate::util;
 
 const APPBAR_CALLBACK: u32 = WM_APP + 1;
 const MSG_TOGGLE_MENU: u32 = WM_APP + 2;
+/// Posted from the Win-key hook to run a Win+<key> hotkey (WPARAM = action id
+/// below) from the message loop — LL hooks must return fast.
+const MSG_HOTKEY: u32 = WM_APP + 4;
+const HOTKEY_RUN: u32 = 1;
+const HOTKEY_EXPLORER: u32 = 2;
+const HOTKEY_DESKTOP: u32 = 3;
 const TIMER_PEEK: usize = 3;
 // Defined in the Win32_UI_Controls module of windows-rs; declared here to
 // avoid pulling in that entire feature for one constant.
@@ -96,6 +102,8 @@ thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
     /// True while the Win key is down with no other key pressed since.
     static WIN_PENDING: Cell<bool> = const { Cell::new(false) };
+    /// Windows minimized by the last Win+D ("show desktop"); restored on the next.
+    static MINIMIZED: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) };
 }
 
 pub struct Taskbar {
@@ -344,12 +352,72 @@ unsafe extern "system" fn win_key_hook(code: i32, wparam: WPARAM, lparam: LPARAM
                     return LRESULT(1);
                 }
             } else if down {
-                // Any other key while Win is held: it's a combo, stand down.
+                // Any other key while Win is held: it's a combo, not a bare tap.
                 WIN_PENDING.set(false);
+                // On this PE there's no working shell to handle Win+<key>, so we
+                // do it ourselves. Dispatch to the message loop (hooks must be
+                // fast) and swallow the key so nothing else sees it.
+                let win_held = (GetAsyncKeyState(VK_LWIN.0 as i32) as u32 & 0x8000) != 0
+                    || (GetAsyncKeyState(VK_RWIN.0 as i32) as u32 & 0x8000) != 0;
+                if win_held {
+                    if let Some(id) = win_hotkey(kb.vkCode) {
+                        let hwnd = STATE.with_borrow(|s| s.as_ref().map(|s| s.hwnd));
+                        if let Some(hwnd) = hwnd {
+                            let _ = PostMessageW(hwnd, MSG_HOTKEY, WPARAM(id as usize), LPARAM(0));
+                        }
+                        return LRESULT(1);
+                    }
+                }
             }
         }
     }
     CallNextHookEx(None, code, wparam, lparam)
+}
+
+/// Map a Win+<key> virtual-key code to a hotkey action id, or `None`.
+fn win_hotkey(vk: u32) -> Option<u32> {
+    match vk {
+        0x52 => Some(HOTKEY_RUN),      // R — Run dialog
+        0x45 => Some(HOTKEY_EXPLORER), // E — file explorer
+        0x44 => Some(HOTKEY_DESKTOP),  // D — show desktop (toggle)
+        _ => None,
+    }
+}
+
+/// Run a command via the shell (same path the start menu uses).
+fn run(cmd: &str, args: &str) {
+    unsafe {
+        let c = util::WideStr::new(cmd);
+        let a = util::WideStr::new(args);
+        ShellExecuteW(None, w!("open"), c.pcwstr(), a.pcwstr(), PCWSTR::null(), SW_SHOWNORMAL);
+    }
+}
+
+/// Win+D: minimize all task-bar app windows; pressing again restores them.
+unsafe fn toggle_show_desktop() {
+    let restore = MINIMIZED.with_borrow(|m| !m.is_empty());
+    if restore {
+        let wins = MINIMIZED.with_borrow_mut(|m| std::mem::take(m));
+        for h in wins {
+            let _ = ShowWindow(h, SW_RESTORE);
+        }
+    } else {
+        let wins: Vec<HWND> = STATE.with_borrow(|s| {
+            s.as_ref()
+                .map(|s| {
+                    s.buttons
+                        .iter()
+                        .flat_map(|b| b.windows.iter().copied())
+                        .filter(|h| IsWindowVisible(*h).as_bool() && !IsIconic(*h).as_bool())
+                        .collect()
+                })
+                .unwrap_or_default()
+        });
+        for &h in &wins {
+            let _ = ShowWindow(h, SW_MINIMIZE);
+        }
+        MINIMIZED.with_borrow_mut(|m| *m = wins);
+    }
 }
 
 fn screen_size() -> (i32, i32) {
@@ -1295,6 +1363,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         MSG_TOGGLE_MENU => {
             start_menu::toggle();
+            LRESULT(0)
+        }
+        MSG_HOTKEY => {
+            match wparam.0 as u32 {
+                HOTKEY_RUN => run("rundll32.exe", "shell32.dll,#61"),
+                HOTKEY_EXPLORER => run("explorer.exe", "shell:MyComputerFolder"),
+                HOTKEY_DESKTOP => toggle_show_desktop(),
+                _ => {}
+            }
             LRESULT(0)
         }
         crate::tray::MSG_TRAY_CHANGED => {
