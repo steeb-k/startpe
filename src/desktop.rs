@@ -25,7 +25,11 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::Com::{CoTaskMemFree, IStream};
 use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
 use windows::Win32::System::Ole::{IOleWindow_Impl, OleInitialize, OLEMENUGROUPWIDTHS};
-use windows::Win32::UI::Controls::{LVHITTESTINFO, LVITEMW, TBBUTTON};
+use windows::Win32::System::SystemInformation::GetTickCount;
+use windows::Win32::UI::Controls::{
+    LVHITTESTINFO, LVITEMW, LIST_VIEW_ITEM_STATE_FLAGS, LVIS_FOCUSED, LVIS_SELECTED, TBBUTTON,
+};
+use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, VK_RETURN};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
     DefSubclassProc, IFolderView2, IShellBrowser, IShellBrowser_Impl, IShellFolder, IShellView,
@@ -73,8 +77,6 @@ fn dlog(msg: &str) {
         let _ = writeln!(f, "{msg}");
     }
 }
-
-static SUBLOG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 unsafe fn window_class(hwnd: HWND) -> String {
     let mut buf = [0u16; 128];
@@ -340,6 +342,7 @@ const LVM_GETITEMCOUNT: u32 = 0x1004;
 const LVM_SETITEMPOSITION: u32 = 0x100F;
 const LVM_GETITEMPOSITION: u32 = 0x1010;
 const LVM_HITTEST: u32 = 0x1012;
+const LVM_SETITEMSTATE: u32 = 0x102B;
 const LVM_GETITEMSPACING: u32 = 0x1033;
 const LVM_GETITEMTEXTW: u32 = 0x1073;
 
@@ -347,26 +350,64 @@ const LVM_GETITEMTEXTW: u32 = 0x1073;
 /// drag rejects intra-view drops, so we move icons ourselves: swallow the item
 /// drag (preventing the defview's drag) and set the item position directly.
 struct DragState {
-    pending: bool,
+    tracking: bool,
     dragging: bool,
     item: i32,
-    start: POINT,
+    down: POINT,
     item_start: POINT,
+    last_click_item: i32,
+    last_click_ms: u32,
 }
 
 thread_local! {
     static DRAG: RefCell<DragState> = const {
         RefCell::new(DragState {
-            pending: false,
+            tracking: false,
             dragging: false,
             item: -1,
-            start: POINT { x: 0, y: 0 },
+            down: POINT { x: 0, y: 0 },
             item_start: POINT { x: 0, y: 0 },
+            last_click_item: -1,
+            last_click_ms: 0,
         })
     };
 }
 
-/// Subclass proc on the desktop `SysListView32` implementing icon drag-move.
+enum Act {
+    Pass,
+    Drop(i32, i32, i32),
+    Click(i32),
+}
+
+unsafe fn lv_hittest(lv: HWND, pt: POINT) -> i32 {
+    let mut hti = LVHITTESTINFO {
+        pt,
+        ..Default::default()
+    };
+    SendMessageW(lv, LVM_HITTEST, WPARAM(0), LPARAM(&mut hti as *mut _ as isize)).0 as i32
+}
+
+/// Select (and focus) only `item`, clearing other selection.
+unsafe fn lv_select_only(lv: HWND, item: i32) {
+    let sel = LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0 | LVIS_FOCUSED.0);
+    let mut clear = LVITEMW {
+        stateMask: LVIS_SELECTED,
+        ..Default::default()
+    };
+    SendMessageW(lv, LVM_SETITEMSTATE, WPARAM(usize::MAX), LPARAM(&mut clear as *mut _ as isize));
+    let mut set = LVITEMW {
+        stateMask: sel,
+        state: sel,
+        ..Default::default()
+    };
+    SendMessageW(lv, LVM_SETITEMSTATE, WPARAM(item as usize), LPARAM(&mut set as *mut _ as isize));
+}
+
+/// Subclass proc on the desktop `SysListView32`. The defview's OLE drag rejects
+/// intra-view icon repositioning, and the list's default left-button handler
+/// runs a modal drag-detect that we can't intercept — so we take over the left
+/// button entirely: drag = reposition (snapped on drop), click = select,
+/// double-click = open (Enter). Right-click/context menu pass through.
 unsafe extern "system" fn list_subclass(
     hwnd: HWND,
     msg: u32,
@@ -382,60 +423,49 @@ unsafe extern "system" fn list_subclass(
                 x: util::loword(lp.0),
                 y: util::hiword(lp.0),
             };
-            let mut hti = LVHITTESTINFO {
-                pt,
-                ..Default::default()
-            };
-            let item = SendMessageW(hwnd, LVM_HITTEST, WPARAM(0), LPARAM(&mut hti as *mut _ as isize))
-                .0 as i32;
-            if SUBLOG.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 5 {
-                dlog(&format!("subclass WM_LBUTTONDOWN hit item={item}"));
+            let item = lv_hittest(hwnd, pt);
+            if item < 0 {
+                DRAG.with_borrow_mut(|d| d.tracking = false);
+                return DefSubclassProc(hwnd, msg, wp, lp); // empty area: rubber-band
             }
+            let mut ip = POINT::default();
+            SendMessageW(
+                hwnd,
+                LVM_GETITEMPOSITION,
+                WPARAM(item as usize),
+                LPARAM(&mut ip as *mut _ as isize),
+            );
             DRAG.with_borrow_mut(|d| {
-                if item >= 0 {
-                    let mut ip = POINT::default();
-                    SendMessageW(
-                        hwnd,
-                        LVM_GETITEMPOSITION,
-                        WPARAM(item as usize),
-                        LPARAM(&mut ip as *mut _ as isize),
-                    );
-                    *d = DragState {
-                        pending: true,
-                        dragging: false,
-                        item,
-                        start: pt,
-                        item_start: ip,
-                    };
-                } else {
-                    d.pending = false;
-                }
+                d.tracking = true;
+                d.dragging = false;
+                d.item = item;
+                d.down = pt;
+                d.item_start = ip;
             });
-            DefSubclassProc(hwnd, msg, wp, lp)
+            SetCapture(hwnd);
+            LRESULT(0) // don't let the list's modal drag-detect run
         }
         WM_MOUSEMOVE => {
-            let mv = DRAG.with_borrow_mut(|d| {
-                if !d.pending || wp.0 & MK_LBUTTON == 0 {
-                    return None; // not an item drag; let the list handle it
+            let repos = DRAG.with_borrow_mut(|d| {
+                if !d.tracking || wp.0 & MK_LBUTTON == 0 {
+                    return None;
                 }
                 let (cx, cy) = (util::loword(lp.0), util::hiword(lp.0));
                 if !d.dragging {
                     let th = GetSystemMetrics(SM_CXDRAG).max(2);
-                    if (cx - d.start.x).abs() >= th || (cy - d.start.y).abs() >= th {
+                    if (cx - d.down.x).abs() >= th || (cy - d.down.y).abs() >= th {
                         d.dragging = true;
                     }
                 }
-                // Swallow all item-drag moves (prevents the defview's OLE drag);
-                // reposition live once past the drag threshold.
                 Some(if d.dragging {
-                    Some((d.item, d.item_start.x + (cx - d.start.x), d.item_start.y + (cy - d.start.y)))
+                    (d.item, d.item_start.x + (cx - d.down.x), d.item_start.y + (cy - d.down.y))
                 } else {
-                    None
+                    (-1, 0, 0)
                 })
             });
-            match mv {
-                Some(repos) => {
-                    if let Some((item, nx, ny)) = repos {
+            match repos {
+                Some((item, nx, ny)) => {
+                    if item >= 0 {
                         set_item_pos(hwnd, item, nx, ny);
                     }
                     LRESULT(0)
@@ -444,21 +474,54 @@ unsafe extern "system" fn list_subclass(
             }
         }
         WM_LBUTTONUP => {
-            let drop = DRAG.with_borrow_mut(|d| {
-                let r = if d.dragging {
+            let act = DRAG.with_borrow_mut(|d| {
+                if !d.tracking {
+                    return Act::Pass;
+                }
+                d.tracking = false;
+                let item = d.item;
+                if d.dragging {
+                    d.dragging = false;
                     let (cx, cy) = (util::loword(lp.0), util::hiword(lp.0));
-                    Some((d.item, d.item_start.x + (cx - d.start.x), d.item_start.y + (cy - d.start.y)))
+                    Act::Drop(item, d.item_start.x + (cx - d.down.x), d.item_start.y + (cy - d.down.y))
                 } else {
-                    None
-                };
-                d.pending = false;
-                d.dragging = false;
-                r
+                    Act::Click(item)
+                }
             });
-            if let Some((item, nx, ny)) = drop {
-                let (sx, sy) = snap_to_grid(hwnd, nx, ny);
-                set_item_pos(hwnd, item, sx, sy);
+            match act {
+                Act::Pass => DefSubclassProc(hwnd, msg, wp, lp),
+                Act::Drop(item, nx, ny) => {
+                    let _ = ReleaseCapture();
+                    let (sx, sy) = snap_to_grid(hwnd, nx, ny);
+                    set_item_pos(hwnd, item, sx, sy);
+                    LRESULT(0)
+                }
+                Act::Click(item) => {
+                    let _ = ReleaseCapture();
+                    lv_select_only(hwnd, item);
+                    const DBLCLK_MS: u32 = 500;
+                    let now = GetTickCount();
+                    let dbl = DRAG.with_borrow_mut(|d| {
+                        let is = d.last_click_item == item
+                            && now.wrapping_sub(d.last_click_ms) <= DBLCLK_MS;
+                        d.last_click_item = if is { -1 } else { item };
+                        d.last_click_ms = now;
+                        is
+                    });
+                    if dbl {
+                        // Open the selected item the way the defview does for Enter.
+                        let _ = PostMessageW(hwnd, WM_KEYDOWN, WPARAM(VK_RETURN.0 as usize), LPARAM(0));
+                        let _ = PostMessageW(hwnd, WM_KEYUP, WPARAM(VK_RETURN.0 as usize), LPARAM(0));
+                    }
+                    LRESULT(0)
+                }
             }
+        }
+        WM_CAPTURECHANGED => {
+            DRAG.with_borrow_mut(|d| {
+                d.tracking = false;
+                d.dragging = false;
+            });
             DefSubclassProc(hwnd, msg, wp, lp)
         }
         _ => DefSubclassProc(hwnd, msg, wp, lp),
