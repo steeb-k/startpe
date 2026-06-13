@@ -19,18 +19,19 @@
 use core::ffi::c_void;
 use std::cell::RefCell;
 
-use windows::core::{implement, w, Result, PCWSTR, PWSTR};
+use windows::core::{implement, w, Interface, Result, PCWSTR, PWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, IStream, COINIT_APARTMENTTHREADED};
+use windows::Win32::System::Com::{CoTaskMemFree, IStream};
 use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
-use windows::Win32::System::Ole::{IOleWindow_Impl, OLEMENUGROUPWIDTHS};
+use windows::Win32::System::Ole::{IOleWindow_Impl, OleInitialize, OLEMENUGROUPWIDTHS};
 use windows::Win32::UI::Controls::{LVITEMW, TBBUTTON};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    IShellBrowser, IShellBrowser_Impl, IShellFolder, IShellView, SHBindToObject,
+    IFolderView2, IShellBrowser, IShellBrowser_Impl, IShellFolder, IShellView, SHBindToObject,
     SHGetDesktopFolder, SHGetKnownFolderIDList, FOLDERID_PublicDesktop, FOLDERSETTINGS, FVM_ICON,
-    FWF_DESKTOP, FWF_NOCLIENTEDGE, FWF_NOSCROLL, SVUIA_ACTIVATE_NOFOCUS,
+    FWF_AUTOARRANGE, FWF_DESKTOP, FWF_NOCLIENTEDGE, FWF_NOSCROLL, FWF_SNAPTOGRID,
+    SVUIA_ACTIVATE_NOFOCUS,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -81,8 +82,10 @@ pub fn create_if_needed(cfg: &Config) -> bool {
     }
 
     unsafe {
-        // The shell view is COM; host it on an STA (this UI thread).
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        // OleInitialize (not just CoInitializeEx) so the hosted desktop view's
+        // OLE drag-and-drop works — without it, dragging icons silently no-ops.
+        // It also puts us on an STA, which the shell view needs.
+        let _ = OleInitialize(None);
         match create(cfg) {
             Ok(()) => true,
             Err(_) => false,
@@ -257,21 +260,27 @@ unsafe fn host_shell_view(parent: HWND, cfg: &Config) {
     let _ = view.UIActivate(SVUIA_ACTIVATE_NOFOCUS.0 as u32);
     let _ = ShowWindow(view_hwnd, SW_SHOW);
 
-    let listview = setup_desktop_list(view_hwnd);
-
     DESKTOP.with_borrow_mut(|d| {
         if let Some(d) = d {
             d.view_hwnd = view_hwnd;
-            d.listview = listview;
             d._view = Some(view);
             d._browser = Some(browser);
         }
     });
 
-    // Drive layout apply (first ticks) then capture (every tick after) on a 1s
-    // timer; icons load asynchronously so we apply a few times.
-    if !listview.is_invalid() {
-        let _ = SetTimer(parent, TIMER_LAYOUT, 1000, None);
+    // A 1s timer finds the (asynchronously created) icon list, sets its flags,
+    // applies the saved layout for the first ticks, then captures changes.
+    let _ = SetTimer(parent, TIMER_LAYOUT, 1000, None);
+}
+
+/// Default the view to auto-arrange OFF, snap-to-grid ON (free but tidy
+/// positioning). Uses the documented `IFolderView2` flags, not list-view hacks.
+unsafe fn configure_view_flags(view: &IShellView) {
+    if let Ok(fv) = view.cast::<IFolderView2>() {
+        let _ = fv.SetCurrentFolderFlags(
+            (FWF_AUTOARRANGE | FWF_SNAPTOGRID).0 as u32,
+            FWF_SNAPTOGRID.0 as u32,
+        );
     }
 }
 
@@ -369,27 +378,6 @@ unsafe fn apply_layout(lv: HWND, text: &str) {
 /// Configure the desktop `SysListView32` for free, tidy positioning: auto-arrange
 /// OFF (dragged icons stay where put) and snap-to-grid ON (they align to a grid).
 /// Returns the list-view handle.
-unsafe fn setup_desktop_list(defview: HWND) -> HWND {
-    const LVS_AUTOARRANGE: isize = 0x0100;
-    const LVM_SETEXTENDEDLISTVIEWSTYLE: u32 = 0x1036;
-    const LVS_EX_SNAPTOGRID: usize = 0x0008_0000;
-    let Ok(lv) = FindWindowExW(defview, None, w!("SysListView32"), None) else {
-        return HWND::default();
-    };
-    if lv.is_invalid() {
-        return HWND::default();
-    }
-    let style = GetWindowLongPtrW(lv, GWL_STYLE);
-    SetWindowLongPtrW(lv, GWL_STYLE, style & !LVS_AUTOARRANGE);
-    SendMessageW(
-        lv,
-        LVM_SETEXTENDEDLISTVIEWSTYLE,
-        WPARAM(LVS_EX_SNAPTOGRID),
-        LPARAM(LVS_EX_SNAPTOGRID as isize),
-    );
-    lv
-}
-
 /// Minimal `IShellBrowser` host for the desktop's `SHELLDLL_DefView`. The view
 /// only really needs `GetWindow` (its parent); the rest are no-ops or
 /// not-implemented, which is all a non-navigating desktop host requires.
@@ -564,33 +552,54 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_TIMER if wp.0 == TIMER_LAYOUT => {
             // Resolve state, then act outside the borrow (file I/O + list msgs).
-            let (tick, lv, last) = DESKTOP.with_borrow_mut(|d| match d {
+            let (tick, mut lv, view_hwnd, view, last) = DESKTOP.with_borrow_mut(|d| match d {
                 Some(d) => {
                     d.ticks += 1;
-                    (d.ticks, d.listview, d.last_layout.clone())
+                    (d.ticks, d.listview, d.view_hwnd, d._view.clone(), d.last_layout.clone())
                 }
-                None => (0, HWND::default(), String::new()),
+                None => (0, HWND::default(), HWND::default(), None, String::new()),
             });
-            if !lv.is_invalid() {
-                if tick <= 3 {
-                    // Items load asynchronously; apply the saved layout a few times.
-                    if let Some(p) = layout_path() {
-                        if let Ok(text) = std::fs::read_to_string(&p) {
-                            apply_layout(lv, &text);
-                        }
-                    }
-                } else {
-                    let cur = capture_layout(lv);
-                    if cur != last {
-                        if let Some(p) = layout_path() {
-                            let _ = std::fs::write(&p, &cur);
+
+            // The SysListView32 is created asynchronously after CreateViewWindow.
+            // Once it appears, set the view flags (auto-arrange off / snap-to-grid
+            // on) and remember the list for layout save/restore.
+            if lv.is_invalid() {
+                if let Ok(found) = FindWindowExW(view_hwnd, None, w!("SysListView32"), None) {
+                    if !found.is_invalid() {
+                        lv = found;
+                        if let Some(v) = &view {
+                            configure_view_flags(v);
                         }
                         DESKTOP.with_borrow_mut(|d| {
                             if let Some(d) = d {
-                                d.last_layout = cur;
+                                d.listview = lv;
                             }
                         });
                     }
+                }
+            }
+            if lv.is_invalid() {
+                return LRESULT(0); // list not up yet; try next tick
+            }
+
+            if tick <= 4 {
+                // Items load asynchronously; apply the saved layout a few times.
+                if let Some(p) = layout_path() {
+                    if let Ok(text) = std::fs::read_to_string(&p) {
+                        apply_layout(lv, &text);
+                    }
+                }
+            } else {
+                let cur = capture_layout(lv);
+                if cur != last {
+                    if let Some(p) = layout_path() {
+                        let _ = std::fs::write(&p, &cur);
+                    }
+                    DESKTOP.with_borrow_mut(|d| {
+                        if let Some(d) = d {
+                            d.last_layout = cur;
+                        }
+                    });
                 }
             }
             LRESULT(0)
