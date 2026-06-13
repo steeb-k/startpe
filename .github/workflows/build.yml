@@ -13,6 +13,9 @@ jobs:
   build:
     runs-on: windows-latest
     strategy:
+      # Build archs sequentially so the two jobs don't race to create the same
+      # tag's GitHub release (softprops/action-gh-release "already_exists").
+      max-parallel: 1
       matrix:
         include:
           - target: x86_64-pc-windows-msvc
