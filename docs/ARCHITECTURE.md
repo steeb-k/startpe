@@ -102,9 +102,13 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   OK / Cancel / Browse… buttons are owner-drawn and hit-tested. Enter runs, Esc
   cancels (or closes an open dropdown), Up/Down cycle history;
   execution expands env vars, splits program/args, and `ShellExecute`s. Uses only
-  documented APIs. Opened by Win+R, the start menu's Run… item and the Win+X menu
-  — every way the Run box appears on these PE images — so it effectively replaces
-  the standard Run window without injecting into other processes
+  documented APIs. Runs as its **own process** (`startpe.exe --run`, handled in
+  `main.rs` before the single-instance guard): every Run entry point — Win+R, the
+  start menu's Run… item, the Win+X menu — `spawn`s that process (with
+  `AllowSetForegroundWindow`) rather than hosting the window in the taskbar
+  process. So the shell treats Run like any app: taskbar / Alt+Tab listing,
+  normal Z order, and the accent window border. `FindWindowW` enforces single
+  instance; closing it ends the process
 - `src/sysinfo.rs` — StartPE's **from-scratch dark System Information window**,
   replacing msinfo32 / the sysdm.cpl summary page (opened by the Win+X "System"
   entry). Same borderless double-buffered GDI approach as `run_window.rs`, but a
@@ -114,12 +118,14 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   Data is gathered on a background thread from **WMI** (`IWbemServices` over
   `ROOT\CIMV2`) with documented Win32/registry fallbacks (`GetNativeSystemInfo`,
   `GlobalMemoryStatusEx`, `EnumDisplayMonitors`, the CurrentVersion key), then
-  `PostMessage`d back to the UI thread. Documented APIs only. Reachable three
-  ways: in-process via Win+X → System and **Win+Pause** (the Win-key hook), and
-  out-of-process via `startpe.exe --sysinfo` — a dedicated short-lived process
-  (handled in `main.rs` before the single-instance guard) that the PE image
-  wires **right-click This PC → Properties** / sysdm.cpl to, via a Properties-
-  verb override on the My Computer CLSID in `StartPE.script`
+  `PostMessage`d back to the UI thread. Documented APIs only. Always runs as its
+  **own process** (`startpe.exe --sysinfo`, handled in `main.rs` before the
+  single-instance guard), so the shell treats it like any app (taskbar / Alt+Tab,
+  normal Z order, accent border). Every entry point spawns it: Win+X → System and
+  **Win+Pause** (the Win-key hook) `spawn` it with `AllowSetForegroundWindow`, and
+  the PE image wires **right-click This PC → Properties** / sysdm.cpl to the same
+  `--sysinfo` via a Properties-verb override on the My Computer CLSID in
+  `StartPE.script`. `FindWindowW` enforces single instance
 - `src/darkmode.rs` — opt-out (`DarkMenus`, default on) dark mode for the
   *shell-rendered* menus our process raises (the hosted desktop context menu),
   via the undocumented uxtheme dark-mode ordinals. The one sanctioned

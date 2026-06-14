@@ -109,6 +109,65 @@ thread_local! {
     static HISTORY: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// Cached dark brush for the input field (one per process).
     static FIELD_BRUSH: Cell<HBRUSH> = const { Cell::new(HBRUSH(std::ptr::null_mut())) };
+    /// True when running as the dedicated `startpe.exe --run` process, so closing
+    /// the window quits the process (rather than just hiding an in-app window).
+    static STANDALONE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Entry point for `startpe.exe --run`: show the Run window and pump messages
+/// until it closes, then return (the process exits). Run is its own process so
+/// the shell treats it like any app — taskbar/Alt+Tab listing, normal Z order,
+/// accent border.
+pub fn run_standalone() {
+    unsafe {
+        // Single instance: if a Run window is already up (this or another --run
+        // process), focus it and exit instead of stacking a second one.
+        if let Ok(existing) = FindWindowW(w!("StartPE_Run"), PCWSTR::null()) {
+            if !existing.is_invalid() {
+                let _ = SetForegroundWindow(existing);
+                return;
+            }
+        }
+    }
+    STANDALONE.with(|f| f.set(true));
+    // Seat the window above the taskbar using the work-area bottom as reference.
+    let taskbar_top = unsafe {
+        let mut wa = RECT::default();
+        let ok = SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            Some(&mut wa as *mut _ as *mut core::ffi::c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+        .is_ok();
+        if ok && wa.bottom > 0 {
+            wa.bottom
+        } else {
+            GetSystemMetrics(SM_CYSCREEN)
+        }
+    };
+    show(taskbar_top);
+    unsafe {
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+}
+
+/// Launch the Run window as a separate `startpe.exe --run` process. Called from
+/// the taskbar process for every Run entry point (Win+R, start menu, Win+X).
+pub fn launch() {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Ok(child) = std::process::Command::new(exe).arg("--run").spawn() {
+            // Grant the new process the right to come to the foreground (it isn't
+            // the foreground process yet, so SetForegroundWindow would be denied).
+            unsafe {
+                let _ = AllowSetForegroundWindow(child.id());
+            }
+        }
+    }
 }
 
 /// One laid-out window: every rect is client-relative and already DPI-scaled.
@@ -263,11 +322,11 @@ pub fn show(taskbar_top: i32) {
         let x = margin;
         let y = (taskbar_top - h - margin).max(margin);
 
-        // Not WS_EX_TOPMOST: the Run window should behave like any other window
-        // (other apps can come in front of it), not float permanently on top.
-        // WS_EX_TOOLWINDOW keeps it off the taskbar, matching the real Run box.
+        // WS_EX_APPWINDOW so the shell lists Run in the taskbar / Alt+Tab and
+        // treats it as an ordinary window (normal Z order, accent border). Not
+        // WS_EX_TOPMOST — other apps can come in front of it.
         let hwnd = CreateWindowExW(
-            WS_EX_TOOLWINDOW,
+            WS_EX_APPWINDOW,
             class,
             w!("Run"),
             WS_POPUP,
@@ -284,8 +343,10 @@ pub fn show(taskbar_top: i32) {
             return;
         };
 
-        // Rounded corners via a GDI region (no DWM needed in PE).
-        let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, scaled(10), scaled(10));
+        // Rounded corners via a GDI region (no DWM needed in PE). Radius 8 to
+        // match the accent window border (border.rs CORNER) so the frame sits
+        // flush on the corners.
+        let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, scaled(16), scaled(16));
         let _ = SetWindowRgn(hwnd, rgn, true);
 
         let font = make_font(scaled(12), 400);
@@ -330,6 +391,12 @@ pub fn show(taskbar_top: i32) {
         });
 
         let _ = ShowWindow(hwnd, SW_SHOW);
+        // Raise above everything, then drop back to the normal (non-topmost) band
+        // so it opens in front yet still behaves like an ordinary window. Z-order
+        // changes via SetWindowPos don't need foreground rights, whereas a freshly
+        // spawned process's SetForegroundWindow can be denied.
+        let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        let _ = SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         let _ = SetForegroundWindow(hwnd);
         let _ = SetFocus(edit);
         log_open();
@@ -465,6 +532,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     let _ = DeleteObject(HGDIOBJ(s.font_icon_lg.0));
                 }
             });
+            // As its own process, closing the Run window ends the process.
+            if STANDALONE.with(|f| f.get()) {
+                PostQuitMessage(0);
+            }
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wp, lp),

@@ -154,6 +154,16 @@ thread_local! {
 /// until it closes, then return (the process exits). Used by the PE image's
 /// sysdm.cpl / "This PC → Properties" redirection.
 pub fn run_standalone() {
+    unsafe {
+        // Single instance: focus an existing System Information window (from this
+        // or another --sysinfo process) instead of opening a second one.
+        if let Ok(existing) = FindWindowW(w!("StartPE_SysInfo"), PCWSTR::null()) {
+            if !existing.is_invalid() {
+                let _ = SetForegroundWindow(existing);
+                return;
+            }
+        }
+    }
     STANDALONE.with(|f| f.set(true));
     show();
     unsafe {
@@ -161,6 +171,21 @@ pub fn run_standalone() {
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
+        }
+    }
+}
+
+/// Launch System Information as a separate `startpe.exe --sysinfo` process, so
+/// the shell treats it as an ordinary app (taskbar/Alt+Tab, normal Z order,
+/// accent border). Called from the taskbar process (Win+X → System, Win+Pause).
+pub fn launch() {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Ok(child) = std::process::Command::new(exe).arg("--sysinfo").spawn() {
+            // Let the new process come to the foreground (it isn't yet, so its
+            // own SetForegroundWindow would otherwise be denied).
+            unsafe {
+                let _ = AllowSetForegroundWindow(child.id());
+            }
         }
     }
 }
@@ -266,8 +291,9 @@ pub fn show() {
             return;
         };
 
-        // Rounded corners via a GDI region (no DWM needed in PE).
-        let rgn = CreateRoundRectRgn(0, 0, lay.width + 1, lay.height + 1, scaled(10), scaled(10));
+        // Rounded corners via a GDI region (no DWM needed in PE). Radius 8 to
+        // match the accent window border (border.rs CORNER).
+        let rgn = CreateRoundRectRgn(0, 0, lay.width + 1, lay.height + 1, scaled(16), scaled(16));
         let _ = SetWindowRgn(hwnd, rgn, true);
 
         // Accent-tinted icon (matches the title glyph) for the taskbar / Alt+Tab,
@@ -301,6 +327,12 @@ pub fn show() {
         });
 
         let _ = ShowWindow(hwnd, SW_SHOW);
+        // Raise above everything, then drop back to the normal band — opens in
+        // front but stays an ordinary window. SetWindowPos Z-order changes don't
+        // need foreground rights (a just-spawned process's SetForegroundWindow
+        // can be denied).
+        let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        let _ = SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         let _ = SetForegroundWindow(hwnd);
         log_open();
 
