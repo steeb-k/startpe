@@ -94,10 +94,12 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   titlebar needs DWM, its control faces need the Themes service — both usually
   absent), so this is a borderless `WS_POPUP` painted entirely with
   double-buffered GDI in the dark palette (no caption, no uxtheme/DWM), seated
-  bottom-left above the taskbar. The only real control is a single-line `EDIT`
-  for input, colored dark via `WM_CTLCOLOREDIT` (pure GDI, which works in PE);
-  the icon, prompt and OK / Cancel / Browse… buttons are owner-drawn and
-  hit-tested. Enter runs, Esc cancels, Up/Down recall this session's history;
+  bottom-left above the taskbar, in the classic Run-box layout (title-bar app
+  icon, body icon + prompt, an inline "Open:" label). The only real control is an
+  editable `COMBOBOX` (a dropdown of this session's command history), colored dark
+  via `WM_CTLCOLOR*` (pure GDI, which works in PE); the icons, prompt, label and
+  OK / Cancel / Browse… buttons are owner-drawn and hit-tested. Enter runs, Esc
+  cancels (or closes an open dropdown), Up/Down cycle history;
   execution expands env vars, splits program/args, and `ShellExecute`s. Uses only
   documented APIs. Opened by Win+R, the start menu's Run… item and the Win+X menu
   — every way the Run box appears on these PE images — so it effectively replaces
