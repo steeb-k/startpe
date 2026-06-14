@@ -130,20 +130,32 @@ pub fn run_standalone() {
         }
     }
     STANDALONE.with(|f| f.set(true));
-    // Seat the window above the taskbar using the work-area bottom as reference.
+    // Seat the window just above StartPE's taskbar. The taskbar auto-hides
+    // Explorer's bar and doesn't reserve work area, so SPI_GETWORKAREA would
+    // report the full screen and the window would slide under the bar — find the
+    // taskbar window and use its top edge, falling back to the work area.
     let taskbar_top = unsafe {
-        let mut wa = RECT::default();
-        let ok = SystemParametersInfoW(
-            SPI_GETWORKAREA,
-            0,
-            Some(&mut wa as *mut _ as *mut core::ffi::c_void),
-            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-        )
-        .is_ok();
-        if ok && wa.bottom > 0 {
-            wa.bottom
+        if let Ok(bar) = FindWindowW(w!("StartPE_Taskbar"), PCWSTR::null()) {
+            let mut rc = RECT::default();
+            if !bar.is_invalid() && GetWindowRect(bar, &mut rc).is_ok() && rc.top > 0 {
+                rc.top
+            } else {
+                GetSystemMetrics(SM_CYSCREEN)
+            }
         } else {
-            GetSystemMetrics(SM_CYSCREEN)
+            let mut wa = RECT::default();
+            let ok = SystemParametersInfoW(
+                SPI_GETWORKAREA,
+                0,
+                Some(&mut wa as *mut _ as *mut core::ffi::c_void),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            )
+            .is_ok();
+            if ok && wa.bottom > 0 {
+                wa.bottom
+            } else {
+                GetSystemMetrics(SM_CYSCREEN)
+            }
         }
     };
     show(taskbar_top);
@@ -348,6 +360,16 @@ pub fn show(taskbar_top: i32) {
         // flush on the corners.
         let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, scaled(16), scaled(16));
         let _ = SetWindowRgn(hwnd, rgn, true);
+
+        // Accent-tinted Run glyph as the per-window taskbar / Alt+Tab icon, set via
+        // WM_SETICON so StartPE's WM_GETICON probe finds it (otherwise the button
+        // falls back to startpe.exe's icon — a blank square in PE). A distinct
+        // glyph from System Information's, so the two read as separate apps.
+        let accent = crate::taskbar::start_button_color();
+        let icon_big = crate::sysinfo::make_glyph_icon('\u{E74C}', accent, scaled(32));
+        let icon_small = crate::sysinfo::make_glyph_icon('\u{E74C}', accent, scaled(16));
+        SendMessageW(hwnd, WM_SETICON, WPARAM(1), LPARAM(icon_big.0 as isize)); // ICON_BIG
+        SendMessageW(hwnd, WM_SETICON, WPARAM(0), LPARAM(icon_small.0 as isize)); // ICON_SMALL
 
         let font = make_font(scaled(12), 400);
 
