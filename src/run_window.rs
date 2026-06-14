@@ -31,8 +31,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::Dialogs::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::Shell::{
-    DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass, ShellExecuteW, SHGetStockIconInfo,
-    SHGSI_ICON, SHSTOCKICONINFO, SIID_DESKTOPPC,
+    DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass, ShellExecuteW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -67,6 +66,7 @@ const LIST_MAX: usize = 8; // most history rows shown at once
 
 const GLYPH_CLOSE: u16 = 0xE8BB; // Segoe MDL2 ChromeClose
 const GLYPH_CHEVRON: u16 = 0xE70D; // Segoe MDL2 ChevronDown
+const GLYPH_RUN: u16 = 0xE74C; // Segoe MDL2 OEM (the Run app icon)
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Hover {
@@ -89,13 +89,17 @@ struct ListState {
 struct State {
     hwnd: HWND,
     edit: HWND,
-    icon: HICON,
+    /// Accent color for the Run glyph (matches the start menu / Start button).
+    accent: u32,
     hover: Hover,
     tracking_mouse: bool,
     list: Option<ListState>,
     font: HFONT,
     font_title: HFONT,
     font_glyph: HFONT,
+    /// Segoe MDL2 fonts for the Run glyph at title (16px) and body (32px) sizes.
+    font_icon_sm: HFONT,
+    font_icon_lg: HFONT,
 }
 
 thread_local! {
@@ -310,13 +314,15 @@ pub fn show(taskbar_top: i32) {
             *s = Some(State {
                 hwnd,
                 edit,
-                icon: load_icon(),
+                accent: crate::taskbar::start_button_color(),
                 hover: Hover::None,
                 tracking_mouse: false,
                 list: None,
                 font,
                 font_title: make_font(scaled(13), 400),
                 font_glyph: make_font_face(scaled(10), 400, w!("Segoe MDL2 Assets")),
+                font_icon_sm: make_font_face(scaled(14), 400, w!("Segoe MDL2 Assets")),
+                font_icon_lg: make_font_face(scaled(26), 400, w!("Segoe MDL2 Assets")),
             });
         });
 
@@ -325,20 +331,6 @@ pub fn show(taskbar_top: i32) {
         let _ = SetFocus(edit);
         log_open();
     }
-}
-
-/// A monitor icon for the window, matching the classic Run box (documented stock
-/// icon, version-stable — unlike a guessed shell32 resource index).
-unsafe fn load_icon() -> HICON {
-    let mut info = SHSTOCKICONINFO {
-        cbSize: std::mem::size_of::<SHSTOCKICONINFO>() as u32,
-        ..Default::default()
-    };
-    if SHGetStockIconInfo(SIID_DESKTOPPC, SHGSI_ICON, &mut info).is_ok() && !info.hIcon.is_invalid()
-    {
-        return info.hIcon;
-    }
-    HICON::default()
 }
 
 fn log_open() {
@@ -466,6 +458,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     let _ = DeleteObject(HGDIOBJ(s.font.0));
                     let _ = DeleteObject(HGDIOBJ(s.font_title.0));
                     let _ = DeleteObject(HGDIOBJ(s.font_glyph.0));
+                    let _ = DeleteObject(HGDIOBJ(s.font_icon_sm.0));
+                    let _ = DeleteObject(HGDIOBJ(s.font_icon_lg.0));
                 }
             });
             LRESULT(0)
@@ -563,20 +557,17 @@ fn paint(state: &State) {
         FillRect(mem, &title_bar, title_bg);
         let _ = DeleteObject(HGDIOBJ(title_bg.0));
 
-        // Title-bar app icon + "Run".
-        if !state.icon.is_invalid() {
-            let _ = DrawIconEx(
-                mem,
-                lay.title_icon.left,
-                lay.title_icon.top,
-                state.icon,
-                scaled(TITLE_ICON),
-                scaled(TITLE_ICON),
-                0,
-                None,
-                DI_NORMAL,
-            );
-        }
+        // Title-bar Run glyph (accent-tinted) + "Run".
+        SelectObject(mem, HGDIOBJ(state.font_icon_sm.0));
+        SetTextColor(mem, COLORREF(state.accent));
+        let mut ticon = [GLYPH_RUN, 0u16];
+        let mut tir = lay.title_icon;
+        DrawTextW(
+            mem,
+            &mut ticon[..1],
+            &mut tir,
+            DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX,
+        );
         SetTextColor(mem, COLORREF(COL_TEXT));
         SelectObject(mem, HGDIOBJ(state.font_title.0));
         let mut title = wide("Run");
@@ -612,20 +603,17 @@ fn paint(state: &State) {
             DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX,
         );
 
-        // Body icon + prompt.
-        if !state.icon.is_invalid() {
-            let _ = DrawIconEx(
-                mem,
-                lay.icon.left,
-                lay.icon.top,
-                state.icon,
-                scaled(ICON),
-                scaled(ICON),
-                0,
-                None,
-                DI_NORMAL,
-            );
-        }
+        // Body Run glyph (accent-tinted) + prompt.
+        SelectObject(mem, HGDIOBJ(state.font_icon_lg.0));
+        SetTextColor(mem, COLORREF(state.accent));
+        let mut bicon = [GLYPH_RUN, 0u16];
+        let mut bir = lay.icon;
+        DrawTextW(
+            mem,
+            &mut bicon[..1],
+            &mut bir,
+            DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX,
+        );
         SelectObject(mem, HGDIOBJ(state.font.0));
         SetTextColor(mem, COLORREF(COL_TEXT));
         let mut prompt = wide(RUN_PROMPT);
