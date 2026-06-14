@@ -136,6 +136,9 @@ struct State {
     /// Smaller MDL2 font for the title-bar icon + close glyph (the nav uses the
     /// larger `font_glyph`).
     font_glyph_title: HFONT,
+    /// Accent-tinted window icons (taskbar / Alt+Tab), destroyed on close.
+    icon_big: HICON,
+    icon_small: HICON,
 }
 
 thread_local! {
@@ -244,7 +247,9 @@ pub fn show() {
         let y = wa.top + ((wa.bottom - wa.top) - lay.height) / 2;
 
         let hwnd = CreateWindowExW(
-            WS_EX_TOOLWINDOW,
+            // WS_EX_APPWINDOW (not WS_EX_TOOLWINDOW) so StartPE's taskbar and
+            // Alt+Tab list it like any app window.
+            WS_EX_APPWINDOW,
             class,
             w!("System Information"),
             WS_POPUP,
@@ -265,10 +270,19 @@ pub fn show() {
         let rgn = CreateRoundRectRgn(0, 0, lay.width + 1, lay.height + 1, scaled(10), scaled(10));
         let _ = SetWindowRgn(hwnd, rgn, true);
 
+        // Accent-tinted icon (matches the title glyph) for the taskbar / Alt+Tab,
+        // set per-window via WM_SETICON so StartPE's WM_GETICON probe finds it.
+        let accent = crate::taskbar::start_button_color();
+        let icon_big = make_glyph_icon(GLYPH_TITLE, accent, scaled(32));
+        let icon_small = make_glyph_icon(GLYPH_TITLE, accent, scaled(16));
+        // ICON_BIG = 1, ICON_SMALL = 0.
+        SendMessageW(hwnd, WM_SETICON, WPARAM(1), LPARAM(icon_big.0 as isize));
+        SendMessageW(hwnd, WM_SETICON, WPARAM(0), LPARAM(icon_small.0 as isize));
+
         STATE.with_borrow_mut(|s| {
             *s = Some(State {
                 hwnd,
-                accent: crate::taskbar::start_button_color(),
+                accent,
                 section: 0,
                 hover: -1,
                 scroll: Cell::new(0),
@@ -281,6 +295,8 @@ pub fn show() {
                 font_nav: make_font(scaled(13), 400),
                 font_glyph: make_font_face(scaled(16), 400, w!("Segoe MDL2 Assets")),
                 font_glyph_title: make_font_face(scaled(13), 400, w!("Segoe MDL2 Assets")),
+                icon_big,
+                icon_small,
             });
         });
 
@@ -498,6 +514,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     ] {
                         let _ = DeleteObject(HGDIOBJ(f.0));
                     }
+                    let _ = DestroyIcon(s.icon_big);
+                    let _ = DestroyIcon(s.icon_small);
                 }
             });
             // A dedicated --sysinfo process ends its loop when the window closes;
@@ -731,6 +749,100 @@ fn draw_glyph(hdc: HDC, font: HFONT, color: u32, ch: char, rc: RECT) {
             DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX,
         );
     }
+}
+
+/// Build a `size`px `HICON` from a Segoe MDL2 `glyph`, tinted `color`
+/// (COLORREF 0x00BBGGRR) with an antialiased alpha edge — so the window's
+/// taskbar / Alt+Tab icon matches its title glyph. We draw the glyph white into
+/// a 32bpp DIB (GDI leaves alpha at 0), then read its luminance as the alpha
+/// coverage and recolor to `color`, premultiplied.
+unsafe fn make_glyph_icon(glyph: char, color: u32, size: i32) -> HICON {
+    let (cr, cg, cb) = (color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF);
+
+    let screen = GetDC(None);
+    let dc = CreateCompatibleDC(screen);
+    ReleaseDC(None, screen);
+
+    let bmi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: size,
+            biHeight: -size, // top-down
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: 0, // BI_RGB
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+    let Ok(dib) = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) else {
+        let _ = DeleteDC(dc);
+        return HICON::default();
+    };
+    let old = SelectObject(dc, HGDIOBJ(dib.0));
+
+    let font = CreateFontW(
+        size * 72 / 100,
+        0,
+        0,
+        0,
+        400,
+        0,
+        0,
+        0,
+        DEFAULT_CHARSET.0 as u32,
+        OUT_DEFAULT_PRECIS.0 as u32,
+        CLIP_DEFAULT_PRECIS.0 as u32,
+        ANTIALIASED_QUALITY.0 as u32,
+        0,
+        w!("Segoe MDL2 Assets"),
+    );
+    let oldf = SelectObject(dc, HGDIOBJ(font.0));
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, COLORREF(0x00FF_FFFF));
+    let mut g = [glyph as u16];
+    let mut rc = RECT {
+        left: 0,
+        top: 0,
+        right: size,
+        bottom: size,
+    };
+    DrawTextW(
+        dc,
+        &mut g,
+        &mut rc,
+        DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX,
+    );
+    let _ = GdiFlush();
+
+    // Recolor: alpha = drawn (white) intensity, color premultiplied by it.
+    let px = bits as *mut u32;
+    for i in 0..(size * size) as isize {
+        let p = *px.offset(i);
+        let a = (p & 0xFF).max((p >> 8) & 0xFF).max((p >> 16) & 0xFF);
+        let (r, gr, b) = (cr * a / 255, cg * a / 255, cb * a / 255);
+        *px.offset(i) = (a << 24) | (r << 16) | (gr << 8) | b;
+    }
+
+    SelectObject(dc, oldf);
+    let _ = DeleteObject(HGDIOBJ(font.0));
+    SelectObject(dc, old);
+    let _ = DeleteDC(dc);
+
+    // 32bpp alpha drives transparency; the mask just needs to exist (all-opaque).
+    let mask = CreateBitmap(size, size, 1, 1, None);
+    let ii = ICONINFO {
+        fIcon: TRUE,
+        xHotspot: 0,
+        yHotspot: 0,
+        hbmMask: mask,
+        hbmColor: dib,
+    };
+    let icon = CreateIconIndirect(&ii).unwrap_or_default();
+    let _ = DeleteObject(HGDIOBJ(dib.0));
+    let _ = DeleteObject(HGDIOBJ(mask.0));
+    icon
 }
 
 fn paint(state: &State) {
