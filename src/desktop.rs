@@ -777,17 +777,11 @@ fn control_panel_wallpaper() -> Option<String> {
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
-        WM_MOUSEACTIVATE => {
-            // Clicking the desktop must not steal focus from the active app or
-            // pull the desktop in front of it — it should just interact with the
-            // background. MA_NOACTIVATE keeps focus where it is without eating the
-            // click, so the icon view still selects/launches normally.
-            LRESULT(MA_NOACTIVATE as isize)
-        }
         WM_WINDOWPOSCHANGING => {
-            // Pin to the very bottom of the Z order no matter what. Without this,
-            // activating the desktop (a click) raises it above open windows — the
-            // "everything got minimized" effect the user sees.
+            // Pin to the very bottom of the Z order no matter what. The desktop
+            // still activates on a click (so keyboard navigation of the icons
+            // works), but activation can't raise it above open windows — which is
+            // what produced the "everything got minimized" effect.
             let pos = &mut *(lp.0 as *mut WINDOWPOS);
             pos.hwndInsertAfter = HWND_BOTTOM;
             pos.flags &= !SWP_NOZORDER;
