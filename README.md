@@ -68,6 +68,11 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the roadmap
   Changes are written to the registry and applied live where possible.
 
 ### Window switching & hotkeys
+- **Accent border on the active window** (`WindowBorders`, opt-out) — a thin
+  frame in the Start-button accent color around the foreground, non-maximized
+  window. A click-through GDI overlay that follows the window via
+  `SetWinEventHook`, so it works in plain WinPE where DWM's accent border
+  (`DWMWA_BORDER_COLOR`) is unavailable.
 - Windows 11-style **Alt+Tab** switcher (centered overlay, `PrintWindow`
   screenshots, no DWM dependency).
 - The **Win key** opens the StartPE menu; **Win+R** (Run), **Win+E** (Explorer),

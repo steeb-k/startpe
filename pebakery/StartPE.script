@@ -17,7 +17,7 @@ Author=steeb-k
 Level=3
 Selected=True
 Mandatory=False
-Version=0.1.56.0
+Version=0.1.57.0
 Date=2026-06-13
 
 [Variables]
@@ -146,6 +146,11 @@ RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","StartButtonColor",15096500
 // right-click context menu, which StartPE hosts in-process). 1 = dark (default),
 // 0 = leave light. Uses uxtheme dark app mode; build-gated and fails closed.
 RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","DarkMenus",1
+
+// Accent-colored frame around the foreground (non-maximized) window, drawn in
+// the StartButtonColor. 1 = on (default), 0 = off. A GDI overlay, since WinPE
+// has no DWM DWMWA_BORDER_COLOR. See src/border.rs.
+RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","WindowBorders",1
 
 // User picture shown on the start menu (circular). Provide a square .bmp
 // next to this script as UserPicture.bmp, or leave absent for the default

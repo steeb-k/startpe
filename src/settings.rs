@@ -73,6 +73,13 @@ const TOGGLES: &[Toggle] = &[
         restart: false,
     },
     Toggle {
+        group: "Windows",
+        label: "Accent border on active window",
+        reg: "WindowBorders",
+        get: |c| c.window_borders,
+        restart: false,
+    },
+    Toggle {
         group: "Menus",
         label: "Dark context menus",
         reg: "DarkMenus",
