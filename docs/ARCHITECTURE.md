@@ -113,7 +113,12 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   Data is gathered on a background thread from **WMI** (`IWbemServices` over
   `ROOT\CIMV2`) with documented Win32/registry fallbacks (`GetNativeSystemInfo`,
   `GlobalMemoryStatusEx`, `EnumDisplayMonitors`, the CurrentVersion key), then
-  `PostMessage`d back to the UI thread. Documented APIs only
+  `PostMessage`d back to the UI thread. Documented APIs only. Reachable three
+  ways: in-process via Win+X → System and **Win+Pause** (the Win-key hook), and
+  out-of-process via `startpe.exe --sysinfo` — a dedicated short-lived process
+  (handled in `main.rs` before the single-instance guard) that the PE image
+  wires **right-click This PC → Properties** / sysdm.cpl to, via a Properties-
+  verb override on the My Computer CLSID in `StartPE.script`
 - `src/darkmode.rs` — opt-out (`DarkMenus`, default on) dark mode for the
   *shell-rendered* menus our process raises (the hosted desktop context menu),
   via the undocumented uxtheme dark-mode ordinals. The one sanctioned

@@ -71,8 +71,8 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the roadmap
 - Windows 11-style **Alt+Tab** switcher (centered overlay, `PrintWindow`
   screenshots, no DWM dependency).
 - The **Win key** opens the StartPE menu; **Win+R** (Run), **Win+E** (Explorer),
-  **Win+D** (show desktop), and **Win+X** (power-user menu) are handled directly
-  (other Win combos pass through).
+  **Win+D** (show desktop), **Win+X** (power-user menu), and **Win+Pause**
+  (System Information) are handled directly (other Win combos pass through).
 - A Windows 11-style **power-user menu** (Win+X, or right-click the start button):
   Event Viewer, System (the built-in dark System Information window),
   Device Manager, Disk Management,
@@ -91,10 +91,12 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the roadmap
 - A **from-scratch dark Run window** (Win+R / start menu / Win+X) — a fully
   owner-drawn replacement for the shell Run box that's actually dark in PE
   (no DWM/Themes dependency), with history recall and Browse.
-- A **from-scratch dark System Information window** (Win+X → System) — a
-  hardware-first replacement for msinfo32 / the sysdm.cpl summary page. Accent-
-  tinted two-pane layout (System, CPU & memory, graphics & displays, storage &
-  network), data from WMI with documented Win32/registry fallbacks.
+- A **from-scratch dark System Information window** — a hardware-first
+  replacement for msinfo32 / the sysdm.cpl summary page. Accent-tinted two-pane
+  layout (System, CPU & memory, graphics & displays, storage & network), data
+  from WMI with documented Win32/registry fallbacks. Opens from Win+X → System,
+  **Win+Pause**, and **right-click This PC → Properties** (the PE image redirects
+  the System Properties verb to `startpe.exe --sysinfo`).
 
 ### Desktop (when Explorer can't provide one)
 On Win11 24H2/25H2 PE sources, Explorer's modern taskbar init fail-fasts and the

@@ -53,6 +53,20 @@ fn log_startup() {
 }
 
 fn main() -> windows::core::Result<()> {
+    // A dedicated System Information invocation: `startpe.exe --sysinfo` just
+    // shows the panel and exits. This is the entry point the PE image redirects
+    // sysdm.cpl / "This PC → Properties" to, so those open our dark System
+    // Information window instead of the legacy applet. It must run *before* the
+    // single-instance guard below, since the real StartPE already holds that
+    // mutex — this is a separate, short-lived process.
+    if std::env::args().skip(1).any(|a| a.eq_ignore_ascii_case("--sysinfo")) {
+        unsafe {
+            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        }
+        sysinfo::run_standalone();
+        return Ok(());
+    }
+
     unsafe {
         // Single instance: a second launch (e.g. from a Run key after an
         // Explorer restart) exits quietly.

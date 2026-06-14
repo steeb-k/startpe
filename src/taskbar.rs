@@ -38,6 +38,7 @@ const HOTKEY_RUN: u32 = 1;
 const HOTKEY_EXPLORER: u32 = 2;
 const HOTKEY_DESKTOP: u32 = 3;
 const HOTKEY_WINX: u32 = 4;
+const HOTKEY_SYSINFO: u32 = 5;
 const TIMER_PEEK: usize = 3;
 // Defined in the Win32_UI_Controls module of windows-rs; declared here to
 // avoid pulling in that entire feature for one constant.
@@ -406,6 +407,7 @@ fn win_hotkey(vk: u32) -> Option<u32> {
         0x45 => Some(HOTKEY_EXPLORER), // E — file explorer
         0x44 => Some(HOTKEY_DESKTOP),  // D — show desktop (toggle)
         0x58 => Some(HOTKEY_WINX),     // X — Win+X power-user menu
+        0x13 => Some(HOTKEY_SYSINFO),  // Pause/Break — System Information
         _ => None,
     }
 }
@@ -1678,6 +1680,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 HOTKEY_EXPLORER => run("explorer.exe", "shell:MyComputerFolder"),
                 HOTKEY_DESKTOP => toggle_show_desktop(),
                 HOTKEY_WINX => show_winx_menu(hwnd, true),
+                HOTKEY_SYSINFO => crate::sysinfo::show(),
                 _ => {}
             }
             LRESULT(0)
