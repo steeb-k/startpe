@@ -788,7 +788,9 @@ fn draw_glyph(hdc: HDC, font: HFONT, color: u32, ch: char, rc: RECT) {
 /// taskbar / Alt+Tab icon matches its title glyph. We draw the glyph white into
 /// a 32bpp DIB (GDI leaves alpha at 0), then read its luminance as the alpha
 /// coverage and recolor to `color`, premultiplied.
-unsafe fn make_glyph_icon(glyph: char, color: u32, size: i32) -> HICON {
+/// Build an HICON of a single Segoe MDL2 glyph tinted `color`, sized `size`.
+/// Shared with `run_window` for its taskbar icon.
+pub(crate) unsafe fn make_glyph_icon(glyph: char, color: u32, size: i32) -> HICON {
     let (cr, cg, cb) = (color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF);
 
     let screen = GetDC(None);

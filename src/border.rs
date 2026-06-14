@@ -34,8 +34,11 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::taskbar::{scaled, start_button_color};
 
-/// Border thickness in 96-DPI px (run through `scaled`).
-const THICKNESS: i32 = 4;
+/// Border thickness in 96-DPI px (run through `scaled`). Drawn *inward* from the
+/// window's visible edge (overlapping its outer pixels), so it reads as a real
+/// border instead of floating outside — and is thin enough not to block the
+/// caption buttons.
+const THICKNESS: i32 = 3;
 /// Corner radius in 96-DPI px, to match Win11's rounded window corners. Only
 /// applied when DWM composition is on (a plain PE has square corners).
 const CORNER: i32 = 8;
@@ -112,11 +115,12 @@ fn ensure_installed() {
         };
         RegisterClassW(&wc); // idempotent
 
-        // Click-through, never-activated, off the taskbar/Alt-Tab. Not topmost:
-        // we re-stack it just above its target on every move so it never floats
-        // above unrelated windows.
+        // Click-through, never-activated, off the taskbar/Alt-Tab. Topmost so the
+        // ring sits *above* the bordered window (otherwise the window's own pixels
+        // hide the inward part of the frame). Safe because we only ever border the
+        // foreground window, which is the top normal window anyway.
         let hwnd = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOPMOST,
             class,
             PCWSTR_NULL,
             WS_POPUP,
@@ -298,9 +302,11 @@ fn position(overlay: HWND, target: HWND) {
         let _ = DeleteObject(HGDIOBJ(inner.0));
         // SetWindowRgn takes ownership of `outer`; bRedraw repaints the ring.
         SetWindowRgn(overlay, outer, true);
+        // HWND_TOPMOST keeps the ring above the (foreground) target. Inserting
+        // relative to `target` would put the overlay *behind* it, hiding the frame.
         let _ = SetWindowPos(
             overlay,
-            target,
+            HWND_TOPMOST,
             rc.left,
             rc.top,
             w,

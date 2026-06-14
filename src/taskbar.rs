@@ -837,7 +837,15 @@ fn refresh_buttons(state: &mut State) {
         for hwnd in ctx.1 {
             let exe = effective_exe(hwnd);
             let key = if state.cfg.combine {
-                exe.clone().unwrap_or_else(|| format!("hwnd:{:?}", hwnd.0))
+                // StartPE's own applets (Run, System Information) are all
+                // `startpe.exe`, so an exe-based key would merge them into one
+                // button — key them by window class instead so they stay separate.
+                let class = window_class(hwnd);
+                if class.starts_with("StartPE_") {
+                    class
+                } else {
+                    exe.clone().unwrap_or_else(|| format!("hwnd:{:?}", hwnd.0))
+                }
             } else {
                 format!("hwnd:{:?}", hwnd.0)
             };
