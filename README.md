@@ -74,7 +74,8 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the roadmap
   **Win+D** (show desktop), and **Win+X** (power-user menu) are handled directly
   (other Win combos pass through).
 - A Windows 11-style **power-user menu** (Win+X, or right-click the start button):
-  Event Viewer, System (msinfo32), Device Manager, Disk Management,
+  Event Viewer, System (the built-in dark System Information window),
+  Device Manager, Disk Management,
   Computer Management, Terminal (the default `%ComSpec%` processor), Task Manager,
   File Explorer, Run, a Shut down / Restart flyout, and Desktop — the PE-relevant
   subset of the Windows 11 menu. Drawn as a rounded, dark, custom popup (no DWM
@@ -90,6 +91,10 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the roadmap
 - A **from-scratch dark Run window** (Win+R / start menu / Win+X) — a fully
   owner-drawn replacement for the shell Run box that's actually dark in PE
   (no DWM/Themes dependency), with history recall and Browse.
+- A **from-scratch dark System Information window** (Win+X → System) — a
+  hardware-first replacement for msinfo32 / the sysdm.cpl summary page. Accent-
+  tinted two-pane layout (System, CPU & memory, graphics & displays, storage &
+  network), data from WMI with documented Win32/registry fallbacks.
 
 ### Desktop (when Explorer can't provide one)
 On Win11 24H2/25H2 PE sources, Explorer's modern taskbar init fail-fasts and the

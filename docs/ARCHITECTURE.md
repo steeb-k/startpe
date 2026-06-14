@@ -104,6 +104,16 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   documented APIs. Opened by Win+R, the start menu's Run… item and the Win+X menu
   — every way the Run box appears on these PE images — so it effectively replaces
   the standard Run window without injecting into other processes
+- `src/sysinfo.rs` — StartPE's **from-scratch dark System Information window**,
+  replacing msinfo32 / the sysdm.cpl summary page (opened by the Win+X "System"
+  entry). Same borderless double-buffered GDI approach as `run_window.rs`, but a
+  fixed-size two-pane layout (left section nav + scrollable content) tinted with
+  the Start-button accent. PE is hardware-centric, so the content is hardware-
+  first (System summary, CPU & memory, graphics & displays, storage & network).
+  Data is gathered on a background thread from **WMI** (`IWbemServices` over
+  `ROOT\CIMV2`) with documented Win32/registry fallbacks (`GetNativeSystemInfo`,
+  `GlobalMemoryStatusEx`, `EnumDisplayMonitors`, the CurrentVersion key), then
+  `PostMessage`d back to the UI thread. Documented APIs only
 - `src/darkmode.rs` — opt-out (`DarkMenus`, default on) dark mode for the
   *shell-rendered* menus our process raises (the hosted desktop context menu),
   via the undocumented uxtheme dark-mode ordinals. The one sanctioned

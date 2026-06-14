@@ -20,6 +20,7 @@ mod run_window;
 mod pins;
 mod settings;
 mod start_menu;
+mod sysinfo;
 mod taskbar;
 mod tray;
 mod util;
