@@ -263,8 +263,11 @@ pub fn show(taskbar_top: i32) {
         let x = margin;
         let y = (taskbar_top - h - margin).max(margin);
 
+        // Not WS_EX_TOPMOST: the Run window should behave like any other window
+        // (other apps can come in front of it), not float permanently on top.
+        // WS_EX_TOOLWINDOW keeps it off the taskbar, matching the real Run box.
         let hwnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            WS_EX_TOOLWINDOW,
             class,
             w!("Run"),
             WS_POPUP,
