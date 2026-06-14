@@ -87,6 +87,12 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the roadmap
   Win+X menu) — rounded corners without DWM, correct separator behavior.
 - Dark-mode for the shell-rendered menus StartPE raises (chiefly the hosted
   desktop's right-click menu) via uxtheme app mode (`DarkMenus`, opt-out).
+- Dark **Run dialog** (Win+R) — themed in-process since it runs StartPE's own
+  modal loop.
+- Puts **Windows into dark app mode** (`DarkApps`, opt-out) so theme-aware apps
+  such as the Windows 11 **Task Manager** come up dark — a documented setting
+  written to the live SYSTEM profile at startup (no injection). Legacy apps with
+  no dark-mode support of their own (msinfo32, MMC) stay light.
 
 ### Desktop (when Explorer can't provide one)
 On Win11 24H2/25H2 PE sources, Explorer's modern taskbar init fail-fasts and the

@@ -21,10 +21,15 @@ use std::cell::Cell;
 
 use windows::core::{w, PCSTR, PCWSTR};
 use windows::Win32::Foundation::*;
+use windows::Win32::Graphics::Gdi::{
+    CreateSolidBrush, RedrawWindow, SetBkColor, SetTextColor, HBRUSH, HDC, HRGN, RDW_ALLCHILDREN,
+    RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW,
+};
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Shell::{
-    SHGetStockIconInfo, SHGSI_ICON, SHSTOCKICONINFO, SIID_APPLICATION, SIID_DESKTOPPC,
+    DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass, SHGetStockIconInfo, SHGSI_ICON,
+    SHSTOCKICONINFO, SIID_APPLICATION, SIID_DESKTOPPC,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -40,6 +45,9 @@ thread_local! {
     static CBT: Cell<HHOOK> = const { Cell::new(HHOOK(std::ptr::null_mut())) };
     /// Top edge (screen y) of the taskbar, so the dialog can sit just above it.
     static ANCHOR_TOP: Cell<i32> = const { Cell::new(0) };
+    /// Cached dark background brush for the themed Run dialog (one per process,
+    /// never freed — a single GDI object for the app's lifetime).
+    static DARK_BRUSH: Cell<HBRUSH> = const { Cell::new(HBRUSH(std::ptr::null_mut())) };
 }
 
 /// Show the shell Run dialog with a proper icon + prompt, positioned bottom-left
@@ -146,6 +154,18 @@ unsafe extern "system" fn cbt_proc(code: i32, wparam: WPARAM, lparam: LPARAM) ->
         let hwnd = HWND(wparam.0 as *mut core::ffi::c_void);
         if class_of(hwnd) == "#32770" {
             reposition(hwnd);
+            // Dark-mode the dialog in place (it runs in our process). dark_dialog
+            // themes the controls; the subclass paints the dialog's own
+            // background/text via WM_CTLCOLOR*. Fails closed to a light dialog.
+            if crate::darkmode::dark_dialog(hwnd) {
+                let _ = SetWindowSubclass(hwnd, Some(dlg_subclass), 1, 0);
+                let _ = RedrawWindow(
+                    hwnd,
+                    None,
+                    HRGN::default(),
+                    RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+                );
+            }
             remove_cbt();
         }
     }
@@ -156,6 +176,45 @@ unsafe fn class_of(hwnd: HWND) -> String {
     let mut buf = [0u16; 32];
     let n = GetClassNameW(hwnd, &mut buf) as usize;
     String::from_utf16_lossy(&buf[..n])
+}
+
+/// The process-lifetime dark background brush, created on first use.
+unsafe fn dark_brush() -> HBRUSH {
+    let cur = DARK_BRUSH.get();
+    if !cur.0.is_null() {
+        return cur;
+    }
+    let b = CreateSolidBrush(COLORREF(crate::taskbar::COL_BG));
+    DARK_BRUSH.set(b);
+    b
+}
+
+/// Subclass on the Run dialog (`#32770`) that paints its background and control
+/// text dark. A dialog draws its own surface, so dark theming the controls isn't
+/// enough — we must answer the `WM_CTLCOLOR*` queries with dark colors and a dark
+/// brush. Removed on `WM_NCDESTROY`.
+unsafe extern "system" fn dlg_subclass(
+    hwnd: HWND,
+    msg: u32,
+    wp: WPARAM,
+    lp: LPARAM,
+    _id: usize,
+    _ref: usize,
+) -> LRESULT {
+    match msg {
+        WM_CTLCOLORDLG | WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLOREDIT
+        | WM_CTLCOLORLISTBOX => {
+            let hdc = HDC(wp.0 as *mut core::ffi::c_void);
+            SetTextColor(hdc, COLORREF(crate::taskbar::COL_TEXT));
+            SetBkColor(hdc, COLORREF(crate::taskbar::COL_BG));
+            LRESULT(dark_brush().0 as isize)
+        }
+        WM_NCDESTROY => {
+            let _ = RemoveWindowSubclass(hwnd, Some(dlg_subclass), 1);
+            DefSubclassProc(hwnd, msg, wp, lp)
+        }
+        _ => DefSubclassProc(hwnd, msg, wp, lp),
+    }
 }
 
 unsafe fn reposition(hwnd: HWND) {

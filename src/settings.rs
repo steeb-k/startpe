@@ -79,6 +79,13 @@ const TOGGLES: &[Toggle] = &[
         get: |c| c.dark_menus,
         restart: true,
     },
+    Toggle {
+        group: "Menus",
+        label: "Dark mode for Windows apps",
+        reg: "DarkApps",
+        get: |c| c.dark_apps,
+        restart: false,
+    },
 ];
 
 /// Build a `COLORREF` (0x00BBGGRR) from sRGB components, usable in const context.
@@ -774,6 +781,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             match act {
                 Act::Toggle(reg, now) => {
                     config::save_bool(reg, now);
+                    // The system app theme applies live (it's just a registry
+                    // write + broadcast), so flip it immediately on toggle.
+                    if reg == "DarkApps" {
+                        crate::darkmode::apply_app_theme(now);
+                    }
                     crate::taskbar::reload_config();
                     let _ = InvalidateRect(hwnd, None, false);
                 }

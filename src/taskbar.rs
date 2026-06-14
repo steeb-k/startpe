@@ -419,6 +419,19 @@ fn run(cmd: &str, args: &str) {
     }
 }
 
+/// Run a command elevated via the shell's `runas` verb. Used for the Win+X
+/// Terminal entry so it comes up as Administrator. In a PE the shell already runs
+/// as SYSTEM, so this is effectively the same as `run`, but it does the right
+/// thing on a full desktop too (and fails closed if the user declines the UAC
+/// prompt).
+fn run_admin(cmd: &str, args: &str) {
+    unsafe {
+        let c = util::WideStr::new(cmd);
+        let a = util::WideStr::new(args);
+        ShellExecuteW(None, w!("runas"), c.pcwstr(), a.pcwstr(), PCWSTR::null(), SW_SHOWNORMAL);
+    }
+}
+
 /// Win+D: minimize all task-bar app windows; pressing again restores them.
 unsafe fn toggle_show_desktop() {
     let restore = MINIMIZED.with_borrow(|m| !m.is_empty());
@@ -986,7 +999,8 @@ fn show_winx_menu(hwnd: HWND, select_first: bool) {
     let Some((x, y)) = anchor else { return };
 
     // Labels carry Windows 11's Win+X access keys (the `&` underlines the letter
-    // and activates the item when pressed): V, Y, M, K, G, I, T, E, R, U, D.
+    // and activates the item when pressed): V, Y, M, K, G, A, T, E, R, U, D.
+    // (Terminal uses A and launches elevated.)
     // Power flyout — Restart / Shut down, matching the start menu's flyout.
     let power = [Item::Entry(20, "&Restart"), Item::Entry(21, "Sh&ut down")];
     let items = [
@@ -995,7 +1009,7 @@ fn show_winx_menu(hwnd: HWND, select_first: bool) {
         Item::Entry(12, "Device &Manager"),
         Item::Entry(13, "Dis&k Management"),
         Item::Entry(14, "Computer Mana&gement"),
-        Item::Entry(15, "Term&inal"),
+        Item::Entry(15, "Termin&al"),
         Item::Separator,
         Item::Entry(16, "&Task Manager"),
         Item::Entry(17, "File &Explorer"),
@@ -1013,7 +1027,7 @@ fn show_winx_menu(hwnd: HWND, select_first: bool) {
         14 => run("mmc.exe", "compmgmt.msc"),
         15 => {
             let term = default_terminal();
-            run(&term, "");
+            run_admin(&term, "");
         }
         16 => run("taskmgr.exe", ""),
         17 => run("explorer.exe", "shell:MyComputerFolder"),
