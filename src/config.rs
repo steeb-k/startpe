@@ -53,6 +53,9 @@ pub struct Config {
     /// app mode. Default on; set 0 to disable if a future Windows build renders
     /// them badly. See `darkmode.rs`.
     pub dark_menus: bool,
+    /// Draw an accent-colored frame around the foreground (non-maximized)
+    /// window, in the Start-button color. Default on. See `border.rs`.
+    pub window_borders: bool,
 }
 
 impl Default for Config {
@@ -72,6 +75,7 @@ impl Default for Config {
             show_system_desktop_icons: false,
             start_button_color: 0x00E6_5AB4,
             dark_menus: true,
+            window_borders: true,
         }
     }
 }
@@ -136,6 +140,9 @@ impl Config {
         }
         if let Ok(v) = key.get_value::<u32, _>("DarkMenus") {
             self.dark_menus = v != 0;
+        }
+        if let Ok(v) = key.get_value::<u32, _>("WindowBorders") {
+            self.window_borders = v != 0;
         }
     }
 }

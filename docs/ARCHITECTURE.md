@@ -52,6 +52,7 @@ Single process, single UI thread, two top-level windows:
 | `StartPE_Taskbar` | appbar; start button, task buttons, clock       |
 | `StartPE_Menu`    | popup start menu; hidden until toggled          |
 | `StartPE_Desktop` | desktop window (wallpaper + hosted `SHELLDLL_DefView`); created only when Explorer's own desktop is absent |
+| `StartPE_Border`  | click-through frame overlay drawn around the foreground window (accent border); follows it via `SetWinEventHook` |
 
 Per-window state lives in `thread_local!` `RefCell`s. The rule for window
 procedures: *resolve* an action while holding the borrow, *perform* it after
@@ -131,6 +132,13 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   a row would pass ~85% of the screen width. No DWM dependency (static
   screenshots, not live thumbnails); releasing Alt / Enter / a click activates
   the selection, Esc cancels
+- `src/border.rs` — accent-colored frame around the foreground, non-maximized
+  window (opt-out `WindowBorders`, default on). A click-through, never-activated
+  `WS_POPUP` overlay shaped to a thin ring by `SetWindowRgn`, kept positioned
+  over the active window and just above it in Z order, following it via
+  `SetWinEventHook` (foreground/move/size/minimize/destroy). Foreground-only by
+  design: WinPE has no DWM, so a background window's frame couldn't be occluded
+  by whatever sits in front of it. Painted in the `StartButtonColor` accent
 - `src/desktop.rs` — StartPE-owned desktop (wallpaper + hosted Public Desktop
   icon view with its own icon-layout save/restore), created only when Explorer's
   own desktop never appears
@@ -178,6 +186,7 @@ Current values (all `REG_DWORD`):
 | `ShowSystemDesktopIcons` | 0 | 1 = show the built-in desktop namespace icons (This PC, Home, Network, Control Panel, Recycle Bin); 0 = hide them so only real shortcuts show |
 | `StartButtonColor` | 15096500 | Start button glyph color COLORREF (0x00BBGGRR); default 0x00E65AB4 (purple, RGB 180,90,230) |
 | `DarkMenus` | 1 | 1 = dark-mode the shell menus created in our process (chiefly the hosted desktop's right-click context menu) via uxtheme dark app mode; 0 = leave them light (see `darkmode.rs`) |
+| `WindowBorders` | 1 | 1 = draw an accent-colored frame (in the `StartButtonColor`) around the foreground, non-maximized window; 0 = off. A GDI overlay, since WinPE lacks DWM `DWMWA_BORDER_COLOR` (see `border.rs`) |
 
 Launch: the PEBakery script writes the Run key for classic logon flows and
 calls `AddAutoRun,PostShell` so winrx-creator/PhoenixPE images start StartPE

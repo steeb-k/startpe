@@ -11,6 +11,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod alttab;
+mod border;
 mod config;
 mod darkmode;
 mod desktop;
@@ -104,6 +105,7 @@ fn main() -> windows::core::Result<()> {
         tray::create(taskbar.hwnd)?;
         taskbar::install_win_key_hook();
         alttab::install();
+        border::install(cfg.window_borders);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {

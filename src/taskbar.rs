@@ -187,9 +187,11 @@ fn log_features(cfg: &Config) {
         let _ = writeln!(
             f,
             "StartPE v{} taskbar: rounded buttons, show-desktop button, \
-             Win+X power menu, locale clock, StartButtonColor=0x{:06X}",
+             Win+X power menu, locale clock, StartButtonColor=0x{:06X}, \
+             WindowBorders={}",
             env!("CARGO_PKG_VERSION"),
-            cfg.start_button_color
+            cfg.start_button_color,
+            cfg.window_borders as u32
         );
     }
 }
@@ -1079,6 +1081,7 @@ pub fn start_button_color() -> u32 {
 /// the next launch but not re-applied here.
 pub fn reload_config() {
     let cfg = Config::load();
+    let window_borders = cfg.window_borders;
     let hwnd = STATE.with_borrow_mut(|s| {
         s.as_mut().map(|s| {
             s.cfg = cfg;
@@ -1091,6 +1094,9 @@ pub fn reload_config() {
             let _ = InvalidateRect(hwnd, None, false);
         }
     }
+    // Apply the accent window-border toggle live (installs/tears down its hooks)
+    // and repaint it in case the Start-button accent color changed.
+    crate::border::set_enabled(window_borders);
 }
 
 fn hit_test(state: &State, x: i32, y: i32) -> Hit {
