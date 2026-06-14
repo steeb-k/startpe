@@ -7,11 +7,13 @@
 //! layer. This window sidesteps all of that the way the rest of StartPE does —
 //! a borderless `WS_POPUP` we own and paint entirely with double-buffered GDI in
 //! the StartPE dark palette (no system caption, no uxtheme/DWM dependency). The
-//! one real child control is a `COMBOBOX` for the input (a dropdown of this
-//! session's command history), colored dark via `WM_CTLCOLOR*` (pure GDI, which
-//! *does* work in PE). The title-bar app icon, the body icon + prompt, the
-//! inline "Open:" label, and the OK / Cancel / Browse… buttons are owner-drawn
-//! and hit-tested in the wndproc. The layout mirrors the classic Windows Run box.
+//! one real child control is a single-line `EDIT` for input, colored dark via
+//! `WM_CTLCOLOREDIT` (pure GDI, which *does* work in PE). Everything else — the
+//! title-bar app icon, the body icon + prompt, the inline "Open:" label, the
+//! OK / Cancel / Browse… buttons, and the **command-history dropdown** (its own
+//! owner-drawn dark popup, since a real combobox draws a light system arrow +
+//! sunken border that can't go dark in PE) — is owner-drawn and hit-tested. The
+//! layout mirrors the classic Windows Run box.
 //!
 //! It is opened by every Run entry point StartPE controls (Win+R, the start
 //! menu's Run…, the Win+X menu), which is every way the Run box appears on these
@@ -30,7 +32,7 @@ use windows::Win32::UI::Controls::Dialogs::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::Shell::{
     DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass, ShellExecuteW, SHGetStockIconInfo,
-    SHGSI_ICON, SHSTOCKICONINFO, SIID_APPLICATION,
+    SHGSI_ICON, SHSTOCKICONINFO, SIID_DESKTOPPC,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -42,6 +44,7 @@ use crate::util;
 
 // Declared locally (as elsewhere in StartPE) to avoid pulling in extra features.
 const WM_MOUSELEAVE: u32 = 0x02A3;
+const EM_SETSEL: u32 = 0x00B1;
 
 const RUN_PROMPT: &str = "Type the name of a program, folder, document, or Internet resource, and StartPE will open it for you.";
 
@@ -52,36 +55,44 @@ const PAD: i32 = 14;
 const ICON: i32 = 32;
 const TITLE_ICON: i32 = 16;
 const PROMPT_H: i32 = 44;
-const ROW_H: i32 = 24; // input row (combo closed height)
+const ROW_H: i32 = 24; // input field height
 const LABEL_W: i32 = 44; // "Open:" label width
-const COMBO_DROP: i32 = 150; // total combo height incl. drop-down area
+const ARROW_W: i32 = 18; // dropdown-arrow slot inside the field
 const BTN_W: i32 = 80;
 const BTN_H: i32 = 26;
 const GAP: i32 = 9;
 const CLOSE: i32 = 30;
+const LIST_ROW_H: i32 = 22; // history popup row height
+const LIST_MAX: usize = 8; // most history rows shown at once
 
 const GLYPH_CLOSE: u16 = 0xE8BB; // Segoe MDL2 ChromeClose
-
-// Combo / edit messages not always surfaced by name.
-const CB_GETDROPPEDSTATE_: u32 = 0x0157;
+const GLYPH_CHEVRON: u16 = 0xE70D; // Segoe MDL2 ChevronDown
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Hover {
     None,
     Close,
+    Drop,
     Ok,
     Cancel,
     Browse,
 }
 
+/// The open command-history dropdown.
+struct ListState {
+    hwnd: HWND,
+    items: Vec<String>,
+    sel: i32,   // keyboard-selected row (-1 = none)
+    hover: i32, // mouse-hovered row (-1 = none)
+}
+
 struct State {
     hwnd: HWND,
-    /// The input combobox (history dropdown). Holds the typed text. Its child
-    /// edit is subclassed for Enter/Esc at creation time.
-    combo: HWND,
+    edit: HWND,
     icon: HICON,
     hover: Hover,
     tracking_mouse: bool,
+    list: Option<ListState>,
     font: HFONT,
     font_title: HFONT,
     font_glyph: HFONT,
@@ -92,7 +103,7 @@ thread_local! {
     /// Commands run this session, oldest first (PE wipes the registry each boot,
     /// so persisting across reboots is pointless — session recall is enough).
     static HISTORY: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-    /// Cached dark brush for the input field / list (one per process).
+    /// Cached dark brush for the input field (one per process).
     static FIELD_BRUSH: Cell<HBRUSH> = const { Cell::new(HBRUSH(std::ptr::null_mut())) };
 }
 
@@ -103,7 +114,9 @@ struct Layout {
     icon: RECT,
     prompt: RECT,
     label: RECT,
-    combo: RECT,
+    field: RECT, // the bordered input box (edit + arrow)
+    arrow: RECT, // dropdown-arrow slot at the right of the field
+    edit: RECT,  // the EDIT child, inset inside the field
     ok: RECT,
     cancel: RECT,
     browse: RECT,
@@ -146,14 +159,26 @@ fn layout() -> Layout {
         right: pad + scaled(LABEL_W),
         bottom: row_top + row_h,
     };
-    let combo = RECT {
+    let field = RECT {
         left: label.right + scaled(6),
         top: row_top,
         right: w - pad,
         bottom: row_top + row_h,
     };
+    let arrow = RECT {
+        left: field.right - scaled(ARROW_W),
+        top: field.top,
+        right: field.right,
+        bottom: field.bottom,
+    };
+    let edit = RECT {
+        left: field.left + scaled(5),
+        top: field.top + scaled(3),
+        right: arrow.left - scaled(2),
+        bottom: field.bottom - scaled(3),
+    };
 
-    let btn_top = combo.bottom + scaled(18);
+    let btn_top = field.bottom + scaled(18);
     let btn_bottom = btn_top + scaled(BTN_H);
     let bw = scaled(BTN_W);
     let g = scaled(GAP);
@@ -187,7 +212,9 @@ fn layout() -> Layout {
         icon,
         prompt,
         label,
-        combo,
+        field,
+        arrow,
+        edit,
         ok,
         cancel,
         browse,
@@ -201,11 +228,11 @@ fn layout() -> Layout {
 pub fn show(taskbar_top: i32) {
     unsafe {
         // Single instance: bring the existing window forward instead of stacking.
-        let existing = STATE.with_borrow(|s| s.as_ref().map(|s| (s.hwnd, s.combo)));
-        if let Some((hwnd, combo)) = existing {
+        let existing = STATE.with_borrow(|s| s.as_ref().map(|s| (s.hwnd, s.edit)));
+        if let Some((hwnd, edit)) = existing {
             if IsWindow(hwnd).as_bool() {
                 let _ = SetForegroundWindow(hwnd);
-                let _ = SetFocus(combo);
+                let _ = SetFocus(edit);
                 return;
             }
         }
@@ -223,6 +250,7 @@ pub fn show(taskbar_top: i32) {
             ..Default::default()
         };
         RegisterClassW(&wc); // idempotent
+        register_list_class(hinstance);
 
         let lay = layout();
         let w = scaled(WIDTH);
@@ -255,52 +283,37 @@ pub fn show(taskbar_top: i32) {
 
         let font = make_font(scaled(12), 400);
 
-        // The single real control: a dark editable combobox with history.
-        let combo = CreateWindowExW(
+        // The single real control: a flat dark single-line edit.
+        let edit = CreateWindowExW(
             WINDOW_EX_STYLE(0),
-            w!("COMBOBOX"),
+            w!("EDIT"),
             PCWSTR::null(),
-            WS_CHILD
-                | WS_VISIBLE
-                | WS_VSCROLL
-                | WINDOW_STYLE((CBS_DROPDOWN | CBS_AUTOHSCROLL) as u32),
-            lay.combo.left,
-            lay.combo.top,
-            lay.combo.right - lay.combo.left,
-            scaled(COMBO_DROP),
+            WS_CHILD | WS_VISIBLE | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+            lay.edit.left,
+            lay.edit.top,
+            lay.edit.right - lay.edit.left,
+            lay.edit.bottom - lay.edit.top,
             hwnd,
             None,
             hinstance,
             None,
         )
         .unwrap_or_default();
-        SendMessageW(combo, WM_SETFONT, WPARAM(font.0 as usize), LPARAM(1));
-
-        // Populate the dropdown with this session's history, newest first, and
-        // preselect the most recent (like the classic Run box).
-        HISTORY.with_borrow(|hist| {
-            for item in hist.iter().rev() {
-                let s = util::WideStr::new(item);
-                SendMessageW(combo, CB_ADDSTRING, WPARAM(0), LPARAM(s.pcwstr().0 as isize));
-            }
-            if let Some(last) = hist.last() {
-                set_text(combo, last);
-            }
-        });
-
-        // Subclass the combobox's child edit for Enter / Esc.
-        let edit = FindWindowExW(combo, None, w!("EDIT"), None).unwrap_or_default();
-        if !edit.is_invalid() {
-            let _ = SetWindowSubclass(edit, Some(edit_subclass), 1, 0);
+        SendMessageW(edit, WM_SETFONT, WPARAM(font.0 as usize), LPARAM(1));
+        let _ = SetWindowSubclass(edit, Some(edit_subclass), 1, 0);
+        // Preselect the most recent command, like the classic Run box.
+        if let Some(last) = HISTORY.with_borrow(|h| h.last().cloned()) {
+            set_text(edit, &last);
         }
 
         STATE.with_borrow_mut(|s| {
             *s = Some(State {
                 hwnd,
-                combo,
+                edit,
                 icon: load_icon(),
                 hover: Hover::None,
                 tracking_mouse: false,
+                list: None,
                 font,
                 font_title: make_font(scaled(13), 400),
                 font_glyph: make_font_face(scaled(10), 400, w!("Segoe MDL2 Assets")),
@@ -309,19 +322,19 @@ pub fn show(taskbar_top: i32) {
 
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
-        let _ = SetFocus(combo);
+        let _ = SetFocus(edit);
         log_open();
     }
 }
 
-/// An application icon for the window, matching the classic Run box.
+/// A monitor icon for the window, matching the classic Run box (documented stock
+/// icon, version-stable — unlike a guessed shell32 resource index).
 unsafe fn load_icon() -> HICON {
     let mut info = SHSTOCKICONINFO {
         cbSize: std::mem::size_of::<SHSTOCKICONINFO>() as u32,
         ..Default::default()
     };
-    if SHGetStockIconInfo(SIID_APPLICATION, SHGSI_ICON, &mut info).is_ok()
-        && !info.hIcon.is_invalid()
+    if SHGetStockIconInfo(SIID_DESKTOPPC, SHGSI_ICON, &mut info).is_ok() && !info.hIcon.is_invalid()
     {
         return info.hIcon;
     }
@@ -354,16 +367,24 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             });
             LRESULT(0)
         }
-        WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
+        WM_CTLCOLOREDIT => {
             let hdc = HDC(wp.0 as *mut core::ffi::c_void);
             SetTextColor(hdc, COLORREF(COL_TEXT));
             SetBkColor(hdc, COLORREF(COL_HOVER));
             LRESULT(field_brush().0 as isize)
         }
         WM_SETFOCUS => {
-            let combo = STATE.with_borrow(|s| s.as_ref().map(|s| s.combo));
-            if let Some(combo) = combo {
-                let _ = SetFocus(combo);
+            let edit = STATE.with_borrow(|s| s.as_ref().map(|s| s.edit));
+            if let Some(edit) = edit {
+                let _ = SetFocus(edit);
+            }
+            LRESULT(0)
+        }
+        WM_ACTIVATE => {
+            // Clicking away closes the dropdown (the window itself stays up).
+            // LOWORD(wParam) == WA_INACTIVE (0).
+            if util::loword(wp.0 as isize) == 0 {
+                close_list();
             }
             LRESULT(0)
         }
@@ -404,8 +425,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
-            let y = util::hiword(lp.0);
             let x = util::loword(lp.0);
+            let y = util::hiword(lp.0);
             // Drag from the title bar (anywhere but the close button).
             if y < scaled(TITLE_H) && !point_in(&layout().close, x, y) {
                 let _ = ReleaseCapture();
@@ -414,20 +435,32 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             LRESULT(0)
         }
         WM_LBUTTONUP => {
-            let act = STATE.with_borrow(|s| s.as_ref().map(|s| (s.hover, s.hwnd, s.combo)));
-            if let Some((hover, hw, combo)) = act {
+            let act = STATE.with_borrow(|s| s.as_ref().map(|s| (s.hover, s.hwnd, s.edit)));
+            if let Some((hover, hw, edit)) = act {
                 match hover {
                     Hover::Close | Hover::Cancel => {
                         let _ = DestroyWindow(hw);
                     }
-                    Hover::Ok => do_run(hw, combo),
-                    Hover::Browse => browse(hw, combo),
+                    Hover::Ok => do_run(hw, edit),
+                    Hover::Browse => browse(hw, edit),
+                    Hover::Drop => {
+                        let open = STATE.with_borrow(|s| {
+                            s.as_ref().map(|s| s.list.is_some()).unwrap_or(false)
+                        });
+                        if open {
+                            close_list();
+                        } else {
+                            open_list(hw);
+                        }
+                        let _ = SetFocus(edit);
+                    }
                     Hover::None => {}
                 }
             }
             LRESULT(0)
         }
         WM_DESTROY => {
+            close_list();
             STATE.with_borrow_mut(|s| {
                 if let Some(s) = s.take() {
                     let _ = DeleteObject(HGDIOBJ(s.font.0));
@@ -460,6 +493,8 @@ fn hit(x: i32, y: i32) -> Hover {
     let lay = layout();
     if point_in(&lay.close, x, y) {
         Hover::Close
+    } else if point_in(&lay.arrow, x, y) {
+        Hover::Drop
     } else if point_in(&lay.ok, x, y) {
         Hover::Ok
     } else if point_in(&lay.cancel, x, y) {
@@ -487,6 +522,14 @@ fn fill_round(hdc: HDC, rc: &RECT, color: u32, radius: i32) {
         SelectObject(hdc, op);
         let _ = DeleteObject(HGDIOBJ(brush.0));
         let _ = DeleteObject(HGDIOBJ(pen.0));
+    }
+}
+
+fn frame(hdc: HDC, rc: &RECT, color: u32) {
+    unsafe {
+        let b = CreateSolidBrush(COLORREF(color));
+        FrameRect(hdc, rc, b);
+        let _ = DeleteObject(HGDIOBJ(b.0));
     }
 }
 
@@ -589,7 +632,7 @@ fn paint(state: &State) {
         let mut pr = lay.prompt;
         DrawTextW(mem, &mut prompt, &mut pr, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
 
-        // Inline "Open:" label, vertically centered with the combo.
+        // Inline "Open:" label, vertically centered with the field.
         let mut label = wide("Open:");
         let mut lr = lay.label;
         DrawTextW(
@@ -598,6 +641,28 @@ fn paint(state: &State) {
             &mut lr,
             DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX,
         );
+
+        // Input field: flat dark fill, owner-drawn dropdown arrow, 1px border.
+        // (The EDIT child paints its own interior over the left part.)
+        let field_fill = CreateSolidBrush(COLORREF(COL_HOVER));
+        FillRect(mem, &lay.field, field_fill);
+        let _ = DeleteObject(HGDIOBJ(field_fill.0));
+        if state.hover == Hover::Drop {
+            let hov = CreateSolidBrush(COLORREF(COL_ACTIVE));
+            FillRect(mem, &lay.arrow, hov);
+            let _ = DeleteObject(HGDIOBJ(hov.0));
+        }
+        SelectObject(mem, HGDIOBJ(state.font_glyph.0));
+        SetTextColor(mem, COLORREF(COL_TEXT));
+        let mut chev = [GLYPH_CHEVRON, 0u16];
+        let mut ar = lay.arrow;
+        DrawTextW(
+            mem,
+            &mut chev[..1],
+            &mut ar,
+            DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX,
+        );
+        frame(mem, &lay.field, COL_TEXT_DIM);
 
         // Buttons.
         draw_button(mem, state, &lay.ok, "OK", Hover::Ok, true);
@@ -648,8 +713,225 @@ fn lighten(c: u32) -> u32 {
     r | (g << 8) | (b << 16)
 }
 
-/// Subclass on the combobox's edit: Enter runs, Esc cancels (or just closes an
-/// open dropdown). Up/Down fall through to the combo for native history cycling.
+// ---- command-history dropdown (owner-drawn dark popup) ----------------------
+
+fn register_list_class(hinstance: HINSTANCE) {
+    unsafe {
+        let wc = WNDCLASSW {
+            lpfnWndProc: Some(list_wndproc),
+            hInstance: hinstance,
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            lpszClassName: w!("StartPE_RunList"),
+            ..Default::default()
+        };
+        RegisterClassW(&wc);
+    }
+}
+
+/// Open the history dropdown below the field (no-op if there's no history).
+fn open_list(main: HWND) {
+    let items: Vec<String> = HISTORY.with_borrow(|h| h.iter().rev().cloned().collect());
+    if items.is_empty() {
+        return;
+    }
+    unsafe {
+        let lay = layout();
+        let mut p = POINT {
+            x: lay.field.left,
+            y: lay.field.bottom + scaled(1),
+        };
+        let _ = ClientToScreen(main, &mut p);
+        let width = lay.field.right - lay.field.left;
+        let shown = items.len().min(LIST_MAX) as i32;
+        let height = shown * scaled(LIST_ROW_H) + 2;
+        let hinstance: HINSTANCE = GetModuleHandleW(None).map(Into::into).unwrap_or_default();
+        let hwnd = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+            w!("StartPE_RunList"),
+            PCWSTR::null(),
+            WS_POPUP,
+            p.x,
+            p.y,
+            width,
+            height,
+            main,
+            None,
+            hinstance,
+            None,
+        )
+        .unwrap_or_default();
+        if hwnd.is_invalid() {
+            return;
+        }
+        STATE.with_borrow_mut(|s| {
+            if let Some(s) = s.as_mut() {
+                s.list = Some(ListState {
+                    hwnd,
+                    items,
+                    sel: -1,
+                    hover: -1,
+                });
+            }
+        });
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    }
+}
+
+fn close_list() {
+    let hwnd = STATE.with_borrow_mut(|s| s.as_mut().and_then(|s| s.list.take()).map(|l| l.hwnd));
+    if let Some(hwnd) = hwnd {
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+        }
+    }
+}
+
+/// Move the dropdown selection by `delta` (opening it first if closed), and
+/// preview the selected entry in the edit.
+fn list_nav(main: HWND, edit: HWND, delta: i32) {
+    let open = STATE.with_borrow(|s| s.as_ref().map(|s| s.list.is_some()).unwrap_or(false));
+    if !open {
+        open_list(main);
+    }
+    let item = STATE.with_borrow_mut(|s| {
+        let s = s.as_mut()?;
+        let l = s.list.as_mut()?;
+        let len = l.items.len() as i32;
+        if len == 0 {
+            return None;
+        }
+        // First nav after opening lands on the natural end.
+        let base = if l.sel < 0 {
+            if delta >= 0 {
+                0
+            } else {
+                len - 1
+            }
+        } else {
+            (l.sel + delta).clamp(0, len - 1)
+        };
+        l.sel = base;
+        l.hover = -1;
+        unsafe {
+            let _ = InvalidateRect(l.hwnd, None, false);
+        }
+        Some(l.items[base as usize].clone())
+    });
+    if let Some(item) = item {
+        unsafe { set_text(edit, &item) };
+    }
+}
+
+unsafe extern "system" fn list_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    match msg {
+        WM_ERASEBKGND => LRESULT(1),
+        WM_PAINT => {
+            paint_list(hwnd);
+            LRESULT(0)
+        }
+        WM_MOUSEMOVE => {
+            let y = util::hiword(lp.0);
+            let idx = y / scaled(LIST_ROW_H);
+            STATE.with_borrow_mut(|s| {
+                if let Some(l) = s.as_mut().and_then(|s| s.list.as_mut()) {
+                    let idx = if idx >= 0 && (idx as usize) < l.items.len() {
+                        idx
+                    } else {
+                        -1
+                    };
+                    if l.hover != idx {
+                        l.hover = idx;
+                        let _ = InvalidateRect(hwnd, None, false);
+                    }
+                }
+            });
+            LRESULT(0)
+        }
+        WM_LBUTTONUP => {
+            let y = util::hiword(lp.0);
+            let idx = y / scaled(LIST_ROW_H);
+            let pick = STATE.with_borrow(|s| {
+                s.as_ref()
+                    .and_then(|s| s.list.as_ref())
+                    .and_then(|l| l.items.get(idx as usize).cloned())
+            });
+            let edit = STATE.with_borrow(|s| s.as_ref().map(|s| s.edit));
+            if let (Some(item), Some(edit)) = (pick, edit) {
+                set_text(edit, &item);
+                close_list();
+                let _ = SetFocus(edit);
+            }
+            LRESULT(0)
+        }
+        _ => DefWindowProcW(hwnd, msg, wp, lp),
+    }
+}
+
+fn paint_list(hwnd: HWND) {
+    unsafe {
+        let mut ps = PAINTSTRUCT::default();
+        let hdc = BeginPaint(hwnd, &mut ps);
+        let mut rc = RECT::default();
+        let _ = GetClientRect(hwnd, &mut rc);
+        let (width, height) = (rc.right, rc.bottom);
+
+        let mem = CreateCompatibleDC(hdc);
+        let bmp = CreateCompatibleBitmap(hdc, width, height);
+        let old_bmp = SelectObject(mem, bmp);
+
+        let bg = CreateSolidBrush(COLORREF(COL_HOVER));
+        FillRect(mem, &rc, bg);
+        let _ = DeleteObject(HGDIOBJ(bg.0));
+        SetBkMode(mem, TRANSPARENT);
+
+        STATE.with_borrow(|s| {
+            if let Some((font, l)) = s.as_ref().and_then(|s| Some((s.font, s.list.as_ref()?))) {
+                SelectObject(mem, HGDIOBJ(font.0));
+                let row = scaled(LIST_ROW_H);
+                for (i, item) in l.items.iter().take(LIST_MAX).enumerate() {
+                    let top = i as i32 * row;
+                    let rr = RECT {
+                        left: 0,
+                        top,
+                        right: width,
+                        bottom: top + row,
+                    };
+                    if i as i32 == l.hover || (l.hover < 0 && i as i32 == l.sel) {
+                        let hb = CreateSolidBrush(COLORREF(COL_ACTIVE));
+                        FillRect(mem, &rr, hb);
+                        let _ = DeleteObject(HGDIOBJ(hb.0));
+                    }
+                    SetTextColor(mem, COLORREF(COL_TEXT));
+                    let mut text = wide(item);
+                    let mut tr = RECT {
+                        left: scaled(8),
+                        top,
+                        right: width - scaled(8),
+                        bottom: top + row,
+                    };
+                    DrawTextW(
+                        mem,
+                        &mut text,
+                        &mut tr,
+                        DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX | DT_END_ELLIPSIS,
+                    );
+                }
+            }
+        });
+        frame(mem, &rc, COL_TEXT_DIM);
+
+        let _ = BitBlt(hdc, 0, 0, width, height, mem, 0, 0, SRCCOPY);
+        SelectObject(mem, old_bmp);
+        let _ = DeleteObject(HGDIOBJ(bmp.0));
+        let _ = DeleteDC(mem);
+        let _ = EndPaint(hwnd, &ps);
+    }
+}
+
+// ---- input edit subclass ----------------------------------------------------
+
+/// Subclass on the input edit: Enter runs, Esc cancels (or closes an open
+/// dropdown), Up/Down drive the history dropdown.
 unsafe extern "system" fn edit_subclass(
     hwnd: HWND,
     msg: u32,
@@ -662,23 +944,25 @@ unsafe extern "system" fn edit_subclass(
         WM_KEYDOWN => {
             let key = wp.0;
             if key == VK_RETURN.0 as usize {
-                if let Ok(combo) = GetParent(hwnd) {
-                    if let Ok(win) = GetParent(combo) {
-                        do_run(win, combo);
-                    }
+                if let Ok(win) = GetParent(hwnd) {
+                    close_list();
+                    do_run(win, hwnd);
                 }
                 return LRESULT(0);
             }
             if key == VK_ESCAPE.0 as usize {
-                if let Ok(combo) = GetParent(hwnd) {
-                    let dropped =
-                        SendMessageW(combo, CB_GETDROPPEDSTATE_, WPARAM(0), LPARAM(0)).0 != 0;
-                    if dropped {
-                        return DefSubclassProc(hwnd, msg, wp, lp);
-                    }
-                    if let Ok(win) = GetParent(combo) {
-                        let _ = DestroyWindow(win);
-                    }
+                let open = STATE.with_borrow(|s| s.as_ref().map(|s| s.list.is_some()).unwrap_or(false));
+                if open {
+                    close_list();
+                } else if let Ok(win) = GetParent(hwnd) {
+                    let _ = DestroyWindow(win);
+                }
+                return LRESULT(0);
+            }
+            if key == VK_DOWN.0 as usize || key == VK_UP.0 as usize {
+                if let Ok(win) = GetParent(hwnd) {
+                    let delta = if key == VK_DOWN.0 as usize { 1 } else { -1 };
+                    list_nav(win, hwnd, delta);
                 }
                 return LRESULT(0);
             }
@@ -701,8 +985,8 @@ unsafe extern "system" fn edit_subclass(
 
 /// Read the command, record it, and run it. Closes on success; on failure shows
 /// the familiar "cannot find" message and leaves the window open to fix.
-fn do_run(hwnd: HWND, combo: HWND) {
-    let cmd = unsafe { get_text(combo) };
+fn do_run(hwnd: HWND, edit: HWND) {
+    let cmd = unsafe { get_text(edit) };
     let trimmed = cmd.trim().to_string();
     if trimmed.is_empty() {
         return;
@@ -792,8 +1076,8 @@ fn path_exists(s: &str) -> bool {
     unsafe { GetFileAttributesW(w.pcwstr()) != INVALID_FILE_ATTRIBUTES }
 }
 
-/// Open a file picker and drop the chosen (quoted) path into the combo.
-fn browse(hwnd: HWND, combo: HWND) {
+/// Open a file picker and drop the chosen (quoted) path into the edit.
+fn browse(hwnd: HWND, edit: HWND) {
     unsafe {
         let mut buf = [0u16; 1040];
         let filter: Vec<u16> = "Programs\0*.exe;*.bat;*.cmd;*.msc\0All Files\0*.*\0\0"
@@ -813,26 +1097,26 @@ fn browse(hwnd: HWND, combo: HWND) {
         if GetOpenFileNameW(&mut ofn).as_bool() {
             let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
             let path = String::from_utf16_lossy(&buf[..n]);
-            set_text(combo, &format!("\"{path}\""));
+            set_text(edit, &format!("\"{path}\""));
         }
         let _ = SetForegroundWindow(hwnd);
-        let _ = SetFocus(combo);
+        let _ = SetFocus(edit);
     }
 }
 
-unsafe fn get_text(combo: HWND) -> String {
-    let len = GetWindowTextLengthW(combo);
+unsafe fn get_text(edit: HWND) -> String {
+    let len = GetWindowTextLengthW(edit);
     if len <= 0 {
         return String::new();
     }
     let mut buf = vec![0u16; len as usize + 1];
-    let n = GetWindowTextW(combo, &mut buf);
+    let n = GetWindowTextW(edit, &mut buf);
     String::from_utf16_lossy(&buf[..n as usize])
 }
 
-unsafe fn set_text(combo: HWND, s: &str) {
+unsafe fn set_text(edit: HWND, s: &str) {
     let w = util::WideStr::new(s);
-    let _ = SetWindowTextW(combo, w.pcwstr());
-    // Select all the edit text (LOWORD=start 0, HIWORD=end -1).
-    SendMessageW(combo, CB_SETEDITSEL, WPARAM(0), LPARAM(0xFFFF_0000u32 as i32 as isize));
+    let _ = SetWindowTextW(edit, w.pcwstr());
+    // Move the caret to the end and select all.
+    SendMessageW(edit, EM_SETSEL, WPARAM(0), LPARAM(-1));
 }
