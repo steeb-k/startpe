@@ -17,7 +17,7 @@
 //! demand as the file manager; it just no longer has to be the shell.
 
 use core::ffi::c_void;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use windows::core::{implement, w, Interface, Result, PCWSTR, PWSTR};
 use windows::Win32::Foundation::*;
@@ -64,6 +64,11 @@ struct DesktopState {
 
 thread_local! {
     static DESKTOP: RefCell<Option<DesktopState>> = const { RefCell::new(None) };
+    /// Armed once the desktop has been placed at the bottom of the Z order, after
+    /// which `WM_WINDOWPOSCHANGING` refuses any Z-order change so the desktop can
+    /// never be raised above app windows. Off during creation so the initial
+    /// `HWND_BOTTOM` placement is allowed through.
+    static ZORDER_PINNED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// TEMP diagnostics for the desktop-drag investigation.
@@ -225,6 +230,8 @@ unsafe fn create(cfg: &Config) -> Result<()> {
         0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
     );
+    // From now on, freeze the desktop's Z order (see `WM_WINDOWPOSCHANGING`).
+    ZORDER_PINNED.with(|p| p.set(true));
 
     // Let the desktop window (and the shell view + menus it raises) theme dark.
     crate::darkmode::allow_window(hwnd);
@@ -777,14 +784,17 @@ fn control_panel_wallpaper() -> Option<String> {
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
-        WM_WINDOWPOSCHANGING => {
-            // Pin to the very bottom of the Z order no matter what. The desktop
-            // still activates on a click (so keyboard navigation of the icons
-            // works), but activation can't raise it above open windows — which is
-            // what produced the "everything got minimized" effect.
+        WM_WINDOWPOSCHANGING if ZORDER_PINNED.with(|p| p.get()) => {
+            // Freeze the desktop's Z order: it was placed at the bottom at startup
+            // and must never rise above app windows (activating it on a click
+            // would otherwise raise it — the "everything got minimized" effect).
+            // We set SWP_NOZORDER to *retain* the current position rather than
+            // actively re-bottoming the window: a forced move during the activating
+            // click disrupts the icon view, which then swallows that click for
+            // activation instead of selecting the icon. Retaining position keeps it
+            // at the bottom while letting the click activate + select normally.
             let pos = &mut *(lp.0 as *mut WINDOWPOS);
-            pos.hwndInsertAfter = HWND_BOTTOM;
-            pos.flags &= !SWP_NOZORDER;
+            pos.flags |= SWP_NOZORDER;
             DefWindowProcW(hwnd, msg, wp, lp)
         }
         WM_ERASEBKGND => {
