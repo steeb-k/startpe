@@ -19,9 +19,9 @@ updated when behavior or config values change.
  module: (1) `tray.rs`, the `Shell_NotifyIcon` WM_COPYDATA wire format (de-facto
  stable, used by every alternative shell); (2) `darkmode.rs`, the uxtheme
  dark-mode ordinals (build-gated, behind `DarkMenus`, fails closed to light
- menus); (3) `run_dialog.rs`, shell32's `RunFileDlg` (ordinal 61) to pop the
- real Run dialog with a proper icon/prompt. Keep any undocumented-ordinal work
- confined to its module; do not scatter such calls elsewhere.
+ menus). Keep any undocumented-ordinal work confined to its module; do not
+ scatter such calls elsewhere. (The Run box is now `run_window.rs`, a from-
+ scratch dark window built on documented APIs only — no ordinals.)
 - **`loader/` is the sandboxed exception.** `startpe_loader.dll` is loaded into
  `explorer.exe` (via a `Drive\shellex\FolderExtensions` COM registration) to
  keep Explorer's shell thread alive past the Win11 taskbar init on PE sources
@@ -55,7 +55,7 @@ updated when behavior or config values change.
   `peek.rs` (hover previews), `alttab.rs` (Win11-style Alt+Tab switcher: LL
   keyboard hook + `PrintWindow` screenshot grid), `menu.rs` (dark owner-drawn
   popup menus), `darkmode.rs` (uxtheme dark app mode for shell menus),
-  `run_dialog.rs` (shell Run dialog via RunFileDlg), `settings.rs` (dark
+  `run_window.rs` (from-scratch dark Run window), `settings.rs` (dark
   settings pane: boolean config switches + Start button color picker, opened
   from the taskbar menu), `config.rs` (registry), `util.rs` (UTF-16).
 - New user-facing settings: add to `config.rs` (registry value under

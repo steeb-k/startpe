@@ -1036,7 +1036,7 @@ fn show_winx_menu(hwnd: HWND, select_first: bool) {
             unsafe {
                 let _ = GetWindowRect(hwnd, &mut rc);
             }
-            crate::run_dialog::show(rc.top);
+            crate::run_window::show(rc.top);
         }
         20 => run("wpeutil.exe", "reboot"),
         21 => run("wpeutil.exe", "shutdown"),
@@ -1670,10 +1670,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         MSG_HOTKEY => {
             match wparam.0 as u32 {
                 HOTKEY_RUN => {
-                    // Use the taskbar's top edge to seat the dialog above it.
+                    // Use the taskbar's top edge to seat the window above it.
                     let mut rc = RECT::default();
                     let _ = GetWindowRect(hwnd, &mut rc);
-                    crate::run_dialog::show(rc.top);
+                    crate::run_window::show(rc.top);
                 }
                 HOTKEY_EXPLORER => run("explorer.exe", "shell:MyComputerFolder"),
                 HOTKEY_DESKTOP => toggle_show_desktop(),

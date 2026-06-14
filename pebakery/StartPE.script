@@ -17,7 +17,7 @@ Author=steeb-k
 Level=3
 Selected=True
 Mandatory=False
-Version=0.1.49.0
+Version=0.1.50.0
 Date=2026-06-13
 
 [Variables]
@@ -133,13 +133,6 @@ RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","StartButtonColor",15096500
 // 0 = leave light. Uses uxtheme dark app mode; build-gated and fails closed.
 RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","DarkMenus",1
 
-// Put Windows itself into dark app mode so theme-aware apps (notably the Win11
-// Task Manager) come up dark on their own. 1 = dark (default), 0 = light. StartPE
-// applies this at runtime by writing the documented AppsUseLightTheme setting to
-// the live SYSTEM profile — see the note below on why a build-time write doesn't
-// work.
-RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","DarkApps",1
-
 // User picture shown on the start menu (circular). Provide a square .bmp
 // next to this script as UserPicture.bmp, or leave absent for the default
 // person silhouette.
@@ -189,12 +182,11 @@ RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\Microsoft\Windows\CurrentVersion\S
 RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced","ShowTaskViewButton",0
 RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced","TaskbarMn",0
 
-// Dark app mode (AppsUseLightTheme) is NOT written here: the PE shell runs as
-// SYSTEM, which never reads this Default-user hive (the same reason StartPE's own
-// config lives in HKLM). StartPE instead writes the setting to the live SYSTEM
-// profile at runtime, gated by the DarkApps value above — so theme-aware apps
-// (e.g. the Win11 Task Manager) actually come up dark. StartPE's own UI is dark
-// regardless.
+// Default to dark mode so theme-aware apps come up dark on their own. This is
+// just the documented system setting (no injection): apps that honor it follow
+// it, apps that ignore it stay light. StartPE's own UI is dark regardless.
+RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize","AppsUseLightTheme",0
+RegWrite,HKLM,REG_DWORD,"Tmp_Default\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize","SystemUsesLightTheme",0
 
 RegHiveUnload,Tmp_Default
 RegHiveUnload,Tmp_Software

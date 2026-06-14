@@ -284,8 +284,8 @@ fn build_right_items() -> Vec<RightItem> {
         RightItem {
             glyph: GLYPH_RUN,
             label: "Run…".to_string(),
-            // Sentinel: routed to the shell Run dialog (run_dialog.rs), not
-            // ShellExecute'd — so it gets a proper icon/prompt and placement.
+            // Sentinel: routed to StartPE's native dark Run window
+            // (run_window.rs), not ShellExecute'd.
             cmd: RUN_DIALOG_CMD.to_string(),
             args: String::new(),
         },
@@ -1188,7 +1188,7 @@ fn perform(hwnd: HWND, action: Action) {
             unsafe {
                 let _ = GetWindowRect(taskbar, &mut rc);
             }
-            crate::run_dialog::show(rc.top);
+            crate::run_window::show(rc.top);
         }
         Action::Shutdown => {
             hide(hwnd);

@@ -53,11 +53,6 @@ pub struct Config {
     /// app mode. Default on; set 0 to disable if a future Windows build renders
     /// them badly. See `darkmode.rs`.
     pub dark_menus: bool,
-    /// Put Windows itself into dark app mode by writing the documented system
-    /// `AppsUseLightTheme`/`SystemUsesLightTheme` setting at startup, so
-    /// theme-aware apps (e.g. the Win11 Task Manager) come up dark on their own.
-    /// Default on. See `darkmode::apply_app_theme`.
-    pub dark_apps: bool,
 }
 
 impl Default for Config {
@@ -77,7 +72,6 @@ impl Default for Config {
             show_system_desktop_icons: false,
             start_button_color: 0x00E6_5AB4,
             dark_menus: true,
-            dark_apps: true,
         }
     }
 }
@@ -142,9 +136,6 @@ impl Config {
         }
         if let Ok(v) = key.get_value::<u32, _>("DarkMenus") {
             self.dark_menus = v != 0;
-        }
-        if let Ok(v) = key.get_value::<u32, _>("DarkApps") {
-            self.dark_apps = v != 0;
         }
     }
 }

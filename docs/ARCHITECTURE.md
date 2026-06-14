@@ -89,25 +89,24 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   power-user menu (`taskbar::show_winx_menu`: a PE-trimmed Win11 power menu —
   system/admin tools, Terminal at `%ComSpec%`, Run, the power flyout — opened by
   Win+X or by right-clicking the start button)
-- `src/run_dialog.rs` — the shell Run dialog done right: calls shell32's
-  `RunFileDlg` (ordinal 61) directly with a proper icon + prompt (vs the
-  iconless "RunDLL" box `rundll32 shell32.dll,#61` produces) and a one-shot
-  `WH_CBT` hook to seat it bottom-left above the taskbar. Because `RunFileDlg`
-  pumps its modal loop in *our* process, the same hook also dark-modes the dialog
-  (`darkmode::dark_dialog` + a `WM_CTLCOLOR*` subclass), gated by `DarkMenus`'s
-  app mode and failing closed to a light dialog. Used by Win+R and the start
-  menu's Run… item
+- `src/run_window.rs` — StartPE's **from-scratch dark Run window**, replacing the
+  shell's `RunFileDlg`. The shell dialog can't be made dark in a plain PE (its
+  titlebar needs DWM, its control faces need the Themes service — both usually
+  absent), so this is a borderless `WS_POPUP` painted entirely with
+  double-buffered GDI in the dark palette (no caption, no uxtheme/DWM), seated
+  bottom-left above the taskbar. The only real control is a single-line `EDIT`
+  for input, colored dark via `WM_CTLCOLOREDIT` (pure GDI, which works in PE);
+  the icon, prompt and OK / Cancel / Browse… buttons are owner-drawn and
+  hit-tested. Enter runs, Esc cancels, Up/Down recall this session's history;
+  execution expands env vars, splits program/args, and `ShellExecute`s. Uses only
+  documented APIs. Opened by Win+R, the start menu's Run… item and the Win+X menu
+  — every way the Run box appears on these PE images — so it effectively replaces
+  the standard Run window without injecting into other processes
 - `src/darkmode.rs` — opt-out (`DarkMenus`, default on) dark mode for the
   *shell-rendered* menus our process raises (the hosted desktop context menu),
   via the undocumented uxtheme dark-mode ordinals. The one sanctioned
   undocumented-API exception in `startpe.exe` besides `tray.rs`: build-gated,
-  confined to this module, and fails closed to light menus. Also exposes
-  `dark_dialog` (themes an in-process dialog's controls — used by the Run dialog)
-  and `apply_app_theme` (`DarkApps`, default on): the latter is *documented* API
-  only (a registry write to the live SYSTEM profile's `AppsUseLightTheme` plus a
-  `WM_SETTINGCHANGE` broadcast) so theme-aware apps like the Win11 Task Manager
-  come up dark — replacing the dead build-time write into the never-read
-  Default-user hive
+  confined to this module, and fails closed to light menus
 - `src/alttab.rs` — Windows 11–style Alt+Tab switcher. A `WH_KEYBOARD_LL` hook
   captures Alt+Tab before the system switcher fires and drives a centered,
   rounded overlay: one tile per top-level window (app icon + title + a
@@ -162,7 +161,6 @@ Current values (all `REG_DWORD`):
 | `ShowSystemDesktopIcons` | 0 | 1 = show the built-in desktop namespace icons (This PC, Home, Network, Control Panel, Recycle Bin); 0 = hide them so only real shortcuts show |
 | `StartButtonColor` | 15096500 | Start button glyph color COLORREF (0x00BBGGRR); default 0x00E65AB4 (purple, RGB 180,90,230) |
 | `DarkMenus` | 1 | 1 = dark-mode the shell menus created in our process (chiefly the hosted desktop's right-click context menu) via uxtheme dark app mode; 0 = leave them light (see `darkmode.rs`) |
-| `DarkApps` | 1 | 1 = put Windows into dark app mode so theme-aware apps (notably the Win11 Task Manager) come up dark; StartPE writes the documented `AppsUseLightTheme`/`SystemUsesLightTheme` setting to the live SYSTEM profile at startup. 0 = light. See `darkmode::apply_app_theme` |
 
 Launch: the PEBakery script writes the Run key for classic logon flows and
 calls `AddAutoRun,PostShell` so winrx-creator/PhoenixPE images start StartPE
