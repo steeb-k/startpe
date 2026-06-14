@@ -53,7 +53,19 @@ struct Border {
     /// Round the frame to match Win11 corners (DWM composition on). False in a
     /// plain PE, where windows are square and the frame is square too.
     rounded: bool,
+    /// StartPE's taskbar window — its rect is cut out of the frame so the border
+    /// never paints over (in front of) the bar.
+    taskbar: HWND,
+    /// Remaining "settle" timer ticks after a focus change. A just-opened window
+    /// may fire its foreground event before it is sized/visible, so we re-check
+    /// the foreground a few times to catch it without continuous polling.
+    settle_ticks: i32,
 }
+
+/// Settle-timer id (re-checks the foreground briefly after a focus change).
+const TIMER_SETTLE: usize = 1;
+/// How many settle ticks to run (× the timer interval below).
+const SETTLE_TICKS: i32 = 5;
 
 thread_local! {
     static BORDER: RefCell<Option<Border>> = const { RefCell::new(None) };
@@ -154,12 +166,15 @@ fn ensure_installed() {
         }
 
         let rounded = DwmIsCompositionEnabled().map(|b| b.as_bool()).unwrap_or(false);
+        let taskbar = FindWindowW(w!("StartPE_Taskbar"), PCWSTR_NULL).unwrap_or_default();
         BORDER.with_borrow_mut(|b| {
             *b = Some(Border {
                 hwnd,
                 target: HWND::default(),
                 hooks,
                 rounded,
+                taskbar,
+                settle_ticks: 0,
             });
         });
     }
@@ -269,7 +284,11 @@ unsafe fn visible_rect(hwnd: HWND) -> Option<RECT> {
 /// above the target. Hides the overlay if the target has vanished or gone
 /// zero-size.
 fn position(overlay: HWND, target: HWND) {
-    let rounded = BORDER.with_borrow(|b| b.as_ref().map(|b| b.rounded).unwrap_or(false));
+    let (rounded, taskbar) = BORDER.with_borrow(|b| {
+        b.as_ref()
+            .map(|b| (b.rounded, b.taskbar))
+            .unwrap_or((false, HWND::default()))
+    });
     unsafe {
         let Some(rc) = visible_rect(target) else {
             let _ = ShowWindow(overlay, SW_HIDE);
@@ -300,6 +319,22 @@ fn position(overlay: HWND, target: HWND) {
         };
         CombineRgn(outer, outer, inner, RGN_DIFF);
         let _ = DeleteObject(HGDIOBJ(inner.0));
+        // Cut StartPE's taskbar out of the ring (in overlay-local coords) so the
+        // frame is occluded by the bar instead of painting on top of it — the
+        // window's own pixels behind the bar are hidden, and so is its border.
+        if !taskbar.is_invalid() {
+            let mut tb = RECT::default();
+            if GetWindowRect(taskbar, &mut tb).is_ok() {
+                let bar = CreateRectRgn(
+                    tb.left - rc.left,
+                    tb.top - rc.top,
+                    tb.right - rc.left,
+                    tb.bottom - rc.top,
+                );
+                CombineRgn(outer, outer, bar, RGN_DIFF);
+                let _ = DeleteObject(HGDIOBJ(bar.0));
+            }
+        }
         // SetWindowRgn takes ownership of `outer`; bRedraw repaints the ring.
         SetWindowRgn(overlay, outer, true);
         // HWND_TOPMOST keeps the ring above the (foreground) target. Inserting
@@ -331,7 +366,28 @@ unsafe extern "system" fn winevent_hook(
         return;
     }
     match event {
-        EVENT_SYSTEM_FOREGROUND | EVENT_SYSTEM_MINIMIZEEND => update_target(hwnd),
+        EVENT_SYSTEM_FOREGROUND | EVENT_SYSTEM_MINIMIZEEND => {
+            update_target(hwnd);
+            // The window may not be fully sized/visible yet — re-check briefly.
+            start_settle();
+        }
+        EVENT_OBJECT_SHOW => {
+            // A window (often one just opened, e.g. via Win+E) became visible. If
+            // it's the foreground and borderable but not yet tracked, adopt it —
+            // its foreground event can arrive before it's ready to border.
+            let (overlay, tracked) = BORDER.with_borrow(|b| match b.as_ref() {
+                Some(b) => (b.hwnd, b.target),
+                None => (HWND::default(), HWND::default()),
+            });
+            if !overlay.is_invalid()
+                && hwnd != tracked
+                && hwnd == GetForegroundWindow()
+                && borderable(hwnd, overlay)
+            {
+                update_target(hwnd);
+                start_settle();
+            }
+        }
         // The active window is being minimized or destroyed: drop the border.
         EVENT_SYSTEM_MINIMIZESTART | EVENT_OBJECT_DESTROY => {
             let hit = BORDER.with_borrow(|b| b.as_ref().filter(|b| b.target == hwnd).map(|b| b.hwnd));
@@ -366,6 +422,23 @@ unsafe extern "system" fn winevent_hook(
     }
 }
 
+/// (Re)start the post-focus settle timer: re-evaluate the foreground a few times
+/// over the next ~300 ms so a window that wasn't ready at its focus event still
+/// gets bordered, without a permanent poll.
+fn start_settle() {
+    let hwnd = BORDER.with_borrow_mut(|b| {
+        b.as_mut().map(|b| {
+            b.settle_ticks = 0;
+            b.hwnd
+        })
+    });
+    if let Some(hwnd) = hwnd {
+        unsafe {
+            SetTimer(hwnd, TIMER_SETTLE, 60, None);
+        }
+    }
+}
+
 /// Hide the overlay and forget the current target.
 fn clear(overlay: HWND) {
     BORDER.with_borrow_mut(|b| {
@@ -383,6 +456,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         // Belt-and-suspenders click-through (on top of WS_EX_TRANSPARENT): the
         // ring forwards every hit to the window beneath, which is the target.
         WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
+        WM_TIMER if wp.0 == TIMER_SETTLE => {
+            let done = BORDER.with_borrow_mut(|b| {
+                b.as_mut()
+                    .map(|b| {
+                        b.settle_ticks += 1;
+                        b.settle_ticks >= SETTLE_TICKS
+                    })
+                    .unwrap_or(true)
+            });
+            update_target(GetForegroundWindow());
+            if done {
+                let _ = KillTimer(hwnd, TIMER_SETTLE);
+            }
+            LRESULT(0)
+        }
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
             let hdc = BeginPaint(hwnd, &mut ps);

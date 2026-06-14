@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "startpe"
-version = "0.1.60"
+version = "0.1.61"
 dependencies = [
  "windows",
  "windows-core",
