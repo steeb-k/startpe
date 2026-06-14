@@ -23,6 +23,9 @@ use std::cell::RefCell;
 
 use windows::core::w;
 use windows::Win32::Foundation::*;
+use windows::Win32::Graphics::Dwm::{
+    DwmGetWindowAttribute, DwmIsCompositionEnabled, DWMWA_EXTENDED_FRAME_BOUNDS,
+};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentProcessId;
@@ -33,6 +36,9 @@ use crate::taskbar::{scaled, start_button_color};
 
 /// Border thickness in 96-DPI px (run through `scaled`).
 const THICKNESS: i32 = 2;
+/// Corner radius in 96-DPI px, to match Win11's rounded window corners. Only
+/// applied when DWM composition is on (a plain PE has square corners).
+const CORNER: i32 = 8;
 
 struct Border {
     /// The overlay frame window.
@@ -41,6 +47,9 @@ struct Border {
     target: HWND,
     /// WinEvent hooks (foreground/minimize range + object range).
     hooks: Vec<HWINEVENTHOOK>,
+    /// Round the frame to match Win11 corners (DWM composition on). False in a
+    /// plain PE, where windows are square and the frame is square too.
+    rounded: bool,
 }
 
 thread_local! {
@@ -140,11 +149,13 @@ fn ensure_installed() {
             }
         }
 
+        let rounded = DwmIsCompositionEnabled().map(|b| b.as_bool()).unwrap_or(false);
         BORDER.with_borrow_mut(|b| {
             *b = Some(Border {
                 hwnd,
                 target: HWND::default(),
                 hooks,
+                rounded,
             });
         });
     }
@@ -229,15 +240,37 @@ fn update_target(candidate: HWND) {
     }
 }
 
-/// Re-fit the overlay to the current target rect and stack it just above the
-/// target. Hides the overlay if the target has vanished or gone zero-size.
+/// The window's *visible* outer rect in screen coordinates. Win11 pads the plain
+/// `GetWindowRect` with an invisible resize border (~7px on the sides/bottom), so
+/// a frame drawn on it floats outside the glass; `DWMWA_EXTENDED_FRAME_BOUNDS`
+/// gives the true edge instead. Falls back to `GetWindowRect` when DWM is absent
+/// (a plain PE, where the window rect *is* the visible rect).
+unsafe fn visible_rect(hwnd: HWND) -> Option<RECT> {
+    let mut rc = RECT::default();
+    let ok = DwmGetWindowAttribute(
+        hwnd,
+        DWMWA_EXTENDED_FRAME_BOUNDS,
+        &mut rc as *mut _ as *mut core::ffi::c_void,
+        std::mem::size_of::<RECT>() as u32,
+    )
+    .is_ok();
+    if ok && rc.right > rc.left && rc.bottom > rc.top {
+        return Some(rc);
+    }
+    let mut wr = RECT::default();
+    GetWindowRect(hwnd, &mut wr).ok().map(|_| wr)
+}
+
+/// Re-fit the overlay to the current target's visible edge and stack it just
+/// above the target. Hides the overlay if the target has vanished or gone
+/// zero-size.
 fn position(overlay: HWND, target: HWND) {
+    let rounded = BORDER.with_borrow(|b| b.as_ref().map(|b| b.rounded).unwrap_or(false));
     unsafe {
-        let mut rc = RECT::default();
-        if GetWindowRect(target, &mut rc).is_err() {
+        let Some(rc) = visible_rect(target) else {
             let _ = ShowWindow(overlay, SW_HIDE);
             return;
-        }
+        };
         let w = rc.right - rc.left;
         let h = rc.bottom - rc.top;
         if w <= 0 || h <= 0 {
@@ -245,11 +278,22 @@ fn position(overlay: HWND, target: HWND) {
             return;
         }
         let t = scaled(THICKNESS).max(1);
-        // Frame-shaped region: full window rect minus the interior hole, so only
-        // the `t`-px ring belongs to the overlay (the middle is literally not
-        // part of the window — clicks pass straight to the app beneath).
-        let outer = CreateRectRgn(0, 0, w, h);
-        let inner = CreateRectRgn(t, t, w - t, h - t);
+        // Frame-shaped region hugging the visible edge: the full rect minus the
+        // interior hole, so only the `t`-px ring belongs to the overlay (the
+        // middle is literally not part of the window — clicks pass through to the
+        // app beneath). Rounded to match Win11 corners where DWM is on.
+        let (outer, inner) = if rounded {
+            let r = scaled(CORNER);
+            let ri = (r - t).max(1);
+            // CreateRoundRectRgn's rect is right/bottom-exclusive and the last two
+            // args are the *ellipse* (full corner) size, i.e. 2× the radius.
+            (
+                CreateRoundRectRgn(0, 0, w + 1, h + 1, 2 * r, 2 * r),
+                CreateRoundRectRgn(t, t, w - t + 1, h - t + 1, 2 * ri, 2 * ri),
+            )
+        } else {
+            (CreateRectRgn(0, 0, w, h), CreateRectRgn(t, t, w - t, h - t))
+        };
         CombineRgn(outer, outer, inner, RGN_DIFF);
         let _ = DeleteObject(HGDIOBJ(inner.0));
         // SetWindowRgn takes ownership of `outer`; bRedraw repaints the ring.
