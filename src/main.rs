@@ -60,11 +60,23 @@ fn main() -> windows::core::Result<()> {
     // Information window instead of the legacy applet. It must run *before* the
     // single-instance guard below, since the real StartPE already holds that
     // mutex — this is a separate, short-lived process.
-    if std::env::args().skip(1).any(|a| a.eq_ignore_ascii_case("--sysinfo")) {
+    // `--sysinfo` / `--run` run one StartPE applet as its own short-lived process
+    // and exit. Routing them through separate processes (rather than hosting the
+    // windows inside the main taskbar process) means the shell treats them as
+    // ordinary apps: they list in the taskbar / Alt+Tab, stack in normal Z order,
+    // and pick up the accent window border like any other window. Must run
+    // *before* the single-instance guard below, since the real StartPE already
+    // holds that mutex — these are separate, short-lived processes.
+    let arg = |name: &str| std::env::args().skip(1).any(|a| a.eq_ignore_ascii_case(name));
+    if arg("--sysinfo") || arg("--run") {
         unsafe {
             let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         }
-        sysinfo::run_standalone();
+        if arg("--run") {
+            run_window::run_standalone();
+        } else {
+            sysinfo::run_standalone();
+        }
         return Ok(());
     }
 

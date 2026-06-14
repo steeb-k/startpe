@@ -1025,7 +1025,7 @@ fn show_winx_menu(hwnd: HWND, select_first: bool) {
     let cmd = crate::menu::track_items(hwnd, x, y, TPM_BOTTOMALIGN, &items, select_first);
     match cmd {
         10 => run("eventvwr.exe", ""),
-        11 => crate::sysinfo::show(),
+        11 => crate::sysinfo::launch(),
         12 => run("mmc.exe", "devmgmt.msc"),
         13 => run("mmc.exe", "diskmgmt.msc"),
         14 => run("mmc.exe", "compmgmt.msc"),
@@ -1035,13 +1035,7 @@ fn show_winx_menu(hwnd: HWND, select_first: bool) {
         }
         16 => run("taskmgr.exe", ""),
         17 => run("explorer.exe", "shell:MyComputerFolder"),
-        18 => {
-            let mut rc = RECT::default();
-            unsafe {
-                let _ = GetWindowRect(hwnd, &mut rc);
-            }
-            crate::run_window::show(rc.top);
-        }
+        18 => crate::run_window::launch(),
         20 => run("wpeutil.exe", "reboot"),
         21 => run("wpeutil.exe", "shutdown"),
         22 => unsafe { toggle_show_desktop() },
@@ -1677,16 +1671,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         MSG_HOTKEY => {
             match wparam.0 as u32 {
-                HOTKEY_RUN => {
-                    // Use the taskbar's top edge to seat the window above it.
-                    let mut rc = RECT::default();
-                    let _ = GetWindowRect(hwnd, &mut rc);
-                    crate::run_window::show(rc.top);
-                }
+                HOTKEY_RUN => crate::run_window::launch(),
                 HOTKEY_EXPLORER => run("explorer.exe", "shell:MyComputerFolder"),
                 HOTKEY_DESKTOP => toggle_show_desktop(),
                 HOTKEY_WINX => show_winx_menu(hwnd, true),
-                HOTKEY_SYSINFO => crate::sysinfo::show(),
+                HOTKEY_SYSINFO => crate::sysinfo::launch(),
                 _ => {}
             }
             LRESULT(0)

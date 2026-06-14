@@ -1092,7 +1092,7 @@ enum Action {
     Navigate,
     Launch(PathBuf),
     Exec(String, String),
-    RunDialog(HWND),
+    RunDialog,
     Shutdown,
     /// Open the power flyout at this screen anchor.
     ShutdownMenu(i32, i32),
@@ -1154,7 +1154,7 @@ fn resolve(m: &mut MenuState, hit: Hit) -> Action {
         Hit::Right(i) => {
             let it = &m.rights[i];
             if it.cmd == RUN_DIALOG_CMD {
-                Action::RunDialog(m.taskbar)
+                Action::RunDialog
             } else {
                 Action::Exec(it.cmd.clone(), it.args.clone())
             }
@@ -1182,13 +1182,9 @@ fn perform(hwnd: HWND, action: Action) {
             hide(hwnd);
             exec(&cmd, &args);
         }
-        Action::RunDialog(taskbar) => {
+        Action::RunDialog => {
             hide(hwnd);
-            let mut rc = RECT::default();
-            unsafe {
-                let _ = GetWindowRect(taskbar, &mut rc);
-            }
-            crate::run_window::show(rc.top);
+            crate::run_window::launch();
         }
         Action::Shutdown => {
             hide(hwnd);

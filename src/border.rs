@@ -35,7 +35,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use crate::taskbar::{scaled, start_button_color};
 
 /// Border thickness in 96-DPI px (run through `scaled`).
-const THICKNESS: i32 = 2;
+const THICKNESS: i32 = 4;
 /// Corner radius in 96-DPI px, to match Win11's rounded window corners. Only
 /// applied when DWM composition is on (a plain PE has square corners).
 const CORNER: i32 = 8;
