@@ -40,8 +40,8 @@ const WM_APP_DATA: u32 = WM_APP + 1; // worker -> UI: SysInfo ready (LPARAM = Bo
 // Layout metrics in 96-DPI px (run through `scaled`).
 const WIDTH: i32 = 720;
 const HEIGHT: i32 = 520;
-const TITLE_H: i32 = 38;
-const CLOSE: i32 = 38;
+const TITLE_H: i32 = 30;
+const CLOSE: i32 = 30;
 const NAV_W: i32 = 192;
 const NAV_TOP: i32 = 8;
 const NAV_ITEM_H: i32 = 46;
@@ -133,11 +133,33 @@ struct State {
     font_title: HFONT,
     font_nav: HFONT,
     font_glyph: HFONT,
-    font_glyph_lg: HFONT,
+    /// Smaller MDL2 font for the title-bar icon + close glyph (the nav uses the
+    /// larger `font_glyph`).
+    font_glyph_title: HFONT,
 }
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+    /// True when launched as `startpe.exe --sysinfo` (a dedicated process): then
+    /// closing the window must quit this process's message loop. When false (the
+    /// in-process Win+X / Win+Pause path) closing must NOT post WM_QUIT — that
+    /// would tear down the taskbar's loop.
+    static STANDALONE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Entry point for `startpe.exe --sysinfo`: show the window and pump messages
+/// until it closes, then return (the process exits). Used by the PE image's
+/// sysdm.cpl / "This PC → Properties" redirection.
+pub fn run_standalone() {
+    STANDALONE.with(|f| f.set(true));
+    show();
+    unsafe {
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
 }
 
 struct Layout {
@@ -255,10 +277,10 @@ pub fn show() {
                 info: None,
                 font: make_font(scaled(13), 400),
                 font_head: make_font(scaled(14), 700),
-                font_title: make_font(scaled(15), 400),
+                font_title: make_font(scaled(13), 400),
                 font_nav: make_font(scaled(13), 400),
                 font_glyph: make_font_face(scaled(16), 400, w!("Segoe MDL2 Assets")),
-                font_glyph_lg: make_font_face(scaled(18), 400, w!("Segoe MDL2 Assets")),
+                font_glyph_title: make_font_face(scaled(13), 400, w!("Segoe MDL2 Assets")),
             });
         });
 
@@ -472,12 +494,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         s.font_title,
                         s.font_nav,
                         s.font_glyph,
-                        s.font_glyph_lg,
+                        s.font_glyph_title,
                     ] {
                         let _ = DeleteObject(HGDIOBJ(f.0));
                     }
                 }
             });
+            // A dedicated --sysinfo process ends its loop when the window closes;
+            // the in-process path must leave the taskbar's loop running.
+            if STANDALONE.with(|f| f.get()) {
+                PostQuitMessage(0);
+            }
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wp, lp),
@@ -733,13 +760,13 @@ fn paint(state: &State) {
         fill(mem, &title_bar, COL_HOVER);
         draw_glyph(
             mem,
-            state.font_glyph_lg,
+            state.font_glyph_title,
             state.accent,
             GLYPH_TITLE,
             RECT {
-                left: scaled(12),
+                left: scaled(10),
                 top: 0,
-                right: scaled(12) + scaled(22),
+                right: scaled(10) + scaled(18),
                 bottom: scaled(TITLE_H),
             },
         );
@@ -749,7 +776,7 @@ fn paint(state: &State) {
             COL_TEXT,
             "System Information",
             RECT {
-                left: scaled(42),
+                left: scaled(34),
                 top: 0,
                 right: width - scaled(CLOSE),
                 bottom: scaled(TITLE_H),
@@ -758,7 +785,7 @@ fn paint(state: &State) {
         );
         draw_glyph(
             mem,
-            state.font_glyph,
+            state.font_glyph_title,
             if state.hover == -2 {
                 COL_TEXT
             } else {

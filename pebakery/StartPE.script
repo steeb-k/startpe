@@ -17,7 +17,7 @@ Author=steeb-k
 Level=3
 Selected=True
 Mandatory=False
-Version=0.1.54.0
+Version=0.1.55.0
 Date=2026-06-13
 
 [Variables]
@@ -88,6 +88,20 @@ RegWrite,HKLM,REG_SZ,"Tmp_Software\Classes\CLSID\%LoaderCLSID%\InProcServer32","
 RegWrite,HKLM,REG_SZ,"Tmp_Software\Classes\CLSID\%LoaderCLSID%\InProcServer32","ThreadingModel","Apartment"
 RegWrite,HKLM,REG_SZ,"Tmp_Software\Classes\Drive\shellex\FolderExtensions\%LoaderCLSID%","","StartPE"
 RegWrite,HKLM,REG_DWORD,"Tmp_Software\Classes\Drive\shellex\FolderExtensions\%LoaderCLSID%","DriveMask",255
+
+// Redirect "System Properties" to StartPE's dark System Information window.
+// `startpe.exe --sysinfo` opens just the panel (no taskbar) and exits. This
+// rewires the My Computer CLSID's Properties verb, so right-click This PC ->
+// Properties (on the desktop, in Explorer's nav pane, and the ribbon) opens
+// StartPE's panel instead of legacy sysdm.cpl / the unavailable Settings page.
+// The System control-panel item ({BB06C0E4-...}) is redirected too. Direct
+// `sysdm.cpl` file runs can't be cleanly redirected, but Win+Pause and the
+// Win+X "System" entry cover those paths in-process.
+RegWrite,HKLM,REG_SZ,"Tmp_Software\Classes\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\shell\Properties","","Properties"
+RegWrite,HKLM,REG_SZ,"Tmp_Software\Classes\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\shell\Properties","Position","bottom"
+RegWrite,HKLM,REG_SZ,"Tmp_Software\Classes\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\shell\Properties","Icon","%PEPrograms%\%ProgramFolder%\%BinaryName%,0"
+RegWrite,HKLM,REG_SZ,"Tmp_Software\Classes\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\shell\Properties\command","","#$q%PEPrograms%\%ProgramFolder%\%BinaryName%#$q --sysinfo"
+RegWrite,HKLM,REG_SZ,"Tmp_Software\Classes\CLSID\{BB06C0E4-D293-4f75-8A90-CB05B6477EEE}\shell\open\command","","#$q%PEPrograms%\%ProgramFolder%\%BinaryName%#$q --sysinfo"
 
 // winrx-creator / PhoenixPE: WinRxCreator.au3 starts Explorer as SYSTEM; the
 // Default-user Run key is not processed on that path. PostShell matches HotSwap
