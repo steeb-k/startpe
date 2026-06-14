@@ -73,6 +73,12 @@ fn main() -> windows::core::Result<()> {
         // shell menus we raise (the hosted desktop's context menu) theme dark.
         darkmode::init(cfg.dark_menus);
 
+        // Put *Windows* into dark app mode too (the documented system setting),
+        // so theme-aware apps the user launches — notably the Win11 Task
+        // Manager — come up dark on their own. Written at runtime because the PE
+        // shell runs as SYSTEM and the offline Default-user hive is never read.
+        darkmode::apply_app_theme(cfg.dark_apps);
+
         // If Explorer can't bring up its own desktop (a PE whose modern-shell
         // packages are stripped, so its taskbar init fail-fasts), StartPE
         // provides the desktop itself — wallpaper + the real shell icon view.
