@@ -1021,7 +1021,7 @@ fn show_winx_menu(hwnd: HWND, select_first: bool) {
     let cmd = crate::menu::track_items(hwnd, x, y, TPM_BOTTOMALIGN, &items, select_first);
     match cmd {
         10 => run("eventvwr.exe", ""),
-        11 => run("msinfo32.exe", ""),
+        11 => crate::sysinfo::show(),
         12 => run("mmc.exe", "devmgmt.msc"),
         13 => run("mmc.exe", "diskmgmt.msc"),
         14 => run("mmc.exe", "compmgmt.msc"),
