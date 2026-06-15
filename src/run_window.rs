@@ -15,6 +15,13 @@
 //! sunken border that can't go dark in PE) — is owner-drawn and hit-tested. The
 //! layout mirrors the classic Windows Run box.
 //!
+//! History persists across launches in `HKCU\Software\StartPE\RunHistory` (via
+//! `config::{load,save}_run_history`) — the in-memory `HISTORY` can't, since each
+//! Run is a separate short-lived `--run` process. The chevron shows the full
+//! history (Up/Down to browse); typing shows the same popup filtered to entries
+//! that prefix-match the input (autocomplete), Down moves into it, Enter runs the
+//! highlight. PE wipes the registry on reboot, so this is session recall.
+//!
 //! It is opened by every Run entry point StartPE controls (Win+R, the start
 //! menu's Run…, the Win+X menu), which is every way the Run box appears on these
 //! PE images — Explorer's own shell never comes up — so this effectively
@@ -44,6 +51,10 @@ use crate::util;
 // Declared locally (as elsewhere in StartPE) to avoid pulling in extra features.
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const EM_SETSEL: u32 = 0x00B1;
+const EN_CHANGE: u32 = 0x0300; // EDIT notification (HIWORD of WM_COMMAND wParam)
+
+/// Most history entries to keep (newest wins; PE wipes the store each reboot).
+const HISTORY_MAX: usize = 30;
 
 const RUN_PROMPT: &str = "Type the name of a program, folder, document, or Internet resource, and StartPE will open it for you.";
 
@@ -112,6 +123,10 @@ thread_local! {
     /// True when running as the dedicated `startpe.exe --run` process, so closing
     /// the window quits the process (rather than just hiding an in-app window).
     static STANDALONE: Cell<bool> = const { Cell::new(false) };
+    /// Set while we programmatically change the edit text (preselect, dropdown
+    /// preview, click-select) so the resulting `EN_CHANGE` doesn't re-trigger the
+    /// autocomplete filter and fight the user.
+    static SUPPRESS_CHANGE: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Entry point for `startpe.exe --run`: show the Run window and pump messages
@@ -391,6 +406,13 @@ pub fn show(taskbar_top: i32) {
         .unwrap_or_default();
         SendMessageW(edit, WM_SETFONT, WPARAM(font.0 as usize), LPARAM(1));
         let _ = SetWindowSubclass(edit, Some(edit_subclass), 1, 0);
+        // Load the persisted history (this is a fresh process each launch, so the
+        // in-memory Vec starts empty — see config::load_run_history).
+        HISTORY.with_borrow_mut(|h| {
+            if h.is_empty() {
+                *h = crate::config::load_run_history();
+            }
+        });
         // Preselect the most recent command, like the classic Run box.
         if let Some(last) = HISTORY.with_borrow(|h| h.last().cloned()) {
             set_text(edit, &last);
@@ -457,6 +479,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             SetBkColor(hdc, COLORREF(COL_HOVER));
             LRESULT(field_brush().0 as isize)
         }
+        WM_COMMAND => {
+            // EN_CHANGE from the input edit -> refresh autocomplete suggestions.
+            if util::hiword(wp.0 as isize) as u32 == EN_CHANGE {
+                if let Some((main, edit)) =
+                    STATE.with_borrow(|s| s.as_ref().map(|s| (s.hwnd, s.edit)))
+                {
+                    on_text_changed(main, edit);
+                }
+            }
+            LRESULT(0)
+        }
         WM_SETFOCUS => {
             let edit = STATE.with_borrow(|s| s.as_ref().map(|s| s.edit));
             if let Some(edit) = edit {
@@ -470,6 +503,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if util::loword(wp.0 as isize) == 0 {
                 close_list();
             }
+            // Repaint so the accent ring switches accent <-> gray with focus.
+            let _ = InvalidateRect(hwnd, None, false);
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
@@ -534,7 +569,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         if open {
                             close_list();
                         } else {
-                            open_list(hw);
+                            open_list(hw, full_history());
                         }
                         let _ = SetFocus(edit);
                     }
@@ -753,8 +788,8 @@ fn paint(state: &State) {
         draw_button(mem, state, &lay.cancel, "Cancel", Hover::Cancel, false);
         draw_button(mem, state, &lay.browse, "Browse\u{2026}", Hover::Browse, false);
 
-        // 1px accent ring (this window is borderless, so it has no native frame).
-        crate::taskbar::accent_ring(mem, &rc, scaled(16));
+        // 1px ring (borderless window: accent when focused, gray otherwise).
+        crate::taskbar::accent_ring(mem, hwnd, &rc, scaled(16));
         let _ = BitBlt(hdc, 0, 0, width, height, mem, 0, 0, SRCCOPY);
         SelectObject(mem, old_bmp);
         let _ = DeleteObject(HGDIOBJ(bmp.0));
@@ -815,21 +850,72 @@ fn register_list_class(hinstance: HINSTANCE) {
 }
 
 /// Open the history dropdown below the field (no-op if there's no history).
-fn open_list(main: HWND) {
-    let items: Vec<String> = HISTORY.with_borrow(|h| h.iter().rev().cloned().collect());
+/// Full history, newest first (what the chevron shows).
+fn full_history() -> Vec<String> {
+    HISTORY.with_borrow(|h| h.iter().rev().cloned().collect())
+}
+
+/// History entries (newest first) that start with `text` (case-insensitive),
+/// excluding one that equals it exactly. Empty `text` returns the full history.
+fn suggestions_for(text: &str) -> Vec<String> {
+    let t = text.trim();
+    if t.is_empty() {
+        return full_history();
+    }
+    let lt = t.to_lowercase();
+    HISTORY.with_borrow(|h| {
+        h.iter()
+            .rev()
+            .filter(|e| e.to_lowercase().starts_with(&lt) && e.as_str() != t)
+            .cloned()
+            .collect()
+    })
+}
+
+/// Show the dropdown/autocomplete list with `items`, creating it or updating it
+/// in place (so typing doesn't recreate the window each keystroke). Empty `items`
+/// closes it.
+fn open_list(main: HWND, items: Vec<String>) {
     if items.is_empty() {
+        close_list();
         return;
     }
+    let lay = layout();
+    let width = lay.field.right - lay.field.left;
+    let shown = items.len().min(LIST_MAX) as i32;
+    let height = shown * scaled(LIST_ROW_H) + 2;
+
+    // Update in place when already open (autocomplete keystrokes).
+    let existing = STATE.with_borrow(|s| s.as_ref().and_then(|s| s.list.as_ref()).map(|l| l.hwnd));
+    if let Some(hwnd) = existing {
+        STATE.with_borrow_mut(|s| {
+            if let Some(l) = s.as_mut().and_then(|s| s.list.as_mut()) {
+                l.items = items;
+                l.sel = -1;
+                l.hover = -1;
+            }
+        });
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                width,
+                height,
+                SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOZORDER,
+            );
+            let _ = InvalidateRect(hwnd, None, false);
+        }
+        return;
+    }
+
     unsafe {
-        let lay = layout();
         let mut p = POINT {
             x: lay.field.left,
             y: lay.field.bottom + scaled(1),
         };
         let _ = ClientToScreen(main, &mut p);
-        let width = lay.field.right - lay.field.left;
-        let shown = items.len().min(LIST_MAX) as i32;
-        let height = shown * scaled(LIST_ROW_H) + 2;
         let hinstance: HINSTANCE = GetModuleHandleW(None).map(Into::into).unwrap_or_default();
         let hwnd = CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
@@ -863,6 +949,21 @@ fn open_list(main: HWND) {
     }
 }
 
+/// On each edit change, show history suggestions that match what's typed (or hide
+/// the box when the field is empty or nothing matches). Skipped while we set the
+/// text ourselves so previews/selections don't re-trigger the filter.
+fn on_text_changed(main: HWND, edit: HWND) {
+    if SUPPRESS_CHANGE.with(|f| f.get()) {
+        return;
+    }
+    let text = unsafe { get_text(edit) };
+    if text.trim().is_empty() {
+        close_list();
+        return;
+    }
+    open_list(main, suggestions_for(&text));
+}
+
 fn close_list() {
     let hwnd = STATE.with_borrow_mut(|s| s.as_mut().and_then(|s| s.list.take()).map(|l| l.hwnd));
     if let Some(hwnd) = hwnd {
@@ -877,7 +978,9 @@ fn close_list() {
 fn list_nav(main: HWND, edit: HWND, delta: i32) {
     let open = STATE.with_borrow(|s| s.as_ref().map(|s| s.list.is_some()).unwrap_or(false));
     if !open {
-        open_list(main);
+        // Nothing open yet: Up/Down browse the full history (the autocomplete box,
+        // when already open from typing, is navigated in place below).
+        open_list(main, full_history());
     }
     let item = STATE.with_borrow_mut(|s| {
         let s = s.as_mut()?;
@@ -1077,10 +1180,17 @@ fn do_run(hwnd: HWND, edit: HWND) {
     if trimmed.is_empty() {
         return;
     }
-    HISTORY.with_borrow_mut(|h| {
+    let snapshot = HISTORY.with_borrow_mut(|h| {
         h.retain(|e| e != &trimmed);
         h.push(trimmed.clone());
+        // Keep the newest HISTORY_MAX (drop from the front, which is oldest).
+        if h.len() > HISTORY_MAX {
+            let drop = h.len() - HISTORY_MAX;
+            h.drain(0..drop);
+        }
+        h.clone()
     });
+    crate::config::save_run_history(&snapshot);
     if unsafe { execute(&trimmed) } {
         unsafe {
             let _ = DestroyWindow(hwnd);
@@ -1201,8 +1311,12 @@ unsafe fn get_text(edit: HWND) -> String {
 }
 
 unsafe fn set_text(edit: HWND, s: &str) {
+    // Suppress the EN_CHANGE this triggers so it doesn't re-open the autocomplete
+    // box over a preview/selection we just placed.
+    SUPPRESS_CHANGE.with(|f| f.set(true));
     let w = util::WideStr::new(s);
     let _ = SetWindowTextW(edit, w.pcwstr());
     // Move the caret to the end and select all.
     SendMessageW(edit, EM_SETSEL, WPARAM(0), LPARAM(-1));
+    SUPPRESS_CHANGE.with(|f| f.set(false));
 }

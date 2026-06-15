@@ -662,9 +662,9 @@ fn paint(state: &State) {
         }
 
         SelectObject(mem, old);
-        // 1px accent ring (borderless window, matches the region's scaled(10) corners).
+        // 1px ring (borderless window: accent when focused, gray otherwise).
         let ring = RECT { left: 0, top: 0, right: width, bottom: height };
-        crate::taskbar::accent_ring(mem, &ring, scaled(10));
+        crate::taskbar::accent_ring(mem, hwnd, &ring, scaled(10));
         let _ = BitBlt(hdc, 0, 0, width, height, mem, 0, 0, SRCCOPY);
         SelectObject(mem, old_bmp);
         let _ = DeleteObject(HGDIOBJ(bmp.0));
@@ -681,6 +681,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     s.hwnd = hwnd;
                 }
             });
+            LRESULT(0)
+        }
+        WM_ACTIVATE => {
+            // Repaint so the accent ring switches accent <-> gray with focus.
+            let _ = InvalidateRect(hwnd, None, false);
             LRESULT(0)
         }
         WM_PAINT => {
