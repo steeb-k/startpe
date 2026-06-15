@@ -162,6 +162,9 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   the settings pane writes runtime changes to `HKCU`)
 - `src/util.rs` — UTF-16 helpers, LOWORD/HIWORD
 - `loader/src/lib.rs` — `startpe_loader.dll`, the Explorer-side shim (see below)
+- `syslaunch/src/main.rs` — `syslaunch.exe`, a standalone helper that runs a
+  program as SYSTEM on a chosen interactive session's desktop, so StartPE can be
+  composited by DWM while keeping SYSTEM privileges (see below)
 
 ## Configuration contract for PEBakery
 
@@ -289,6 +292,50 @@ DLL into `explorer.exe`. The loader:
 The active taskbar-suppression hook lives here once the crash signature is
 known. This DLL is the **one** component permitted to touch Explorer internals;
 everything in `startpe.exe` remains documented Win32.
+
+### DWM under SYSTEM (`syslaunch/`)
+
+WinPE shells run as SYSTEM in a session with **no interactive logon**, so
+`winlogon` never spawns `dwm.exe` and nothing is composited — no dark titlebars,
+no DWM window frames, no live taskbar thumbnails. Manually starting `dwm.exe` as
+SYSTEM does not composite the session (verified on 25H2). DWM is per-session: it
+is spawned by `winlogon` for an *interactive logon* and runs as its own virtual
+account (`Window Manager\DWM-N`), compositing every top-level window on that
+session's desktop **regardless of the owning process's token** — including
+windows owned by SYSTEM.
+
+So StartPE gets DWM by **decoupling who logs on from what the shell runs as**:
+
+1. The build enables "Logon as Admin" auto-login (winrx `LogonAsAdmin`:
+   `cb_AutoAdminLogin=True`, `cb_PatchSessionMgr=False` — that `lsm.dll`
+   session-switch patch hard-crashes 25H2, and we log into Admin once and never
+   switch back). `winlogon` brings up an interactive Administrator session, so
+   `dwm.exe` runs and composites it.
+2. The Admin session's PostShell autorun launches StartPE via
+   `syslaunch.exe "<path>\startpe.exe"` instead of directly. `syslaunch` obtains
+   a SYSTEM token and re-launches StartPE as SYSTEM onto that session's
+   `winsta0\default` desktop — so StartPE keeps SYSTEM (ACL-skipping for data
+   recovery) **and** is composited by DWM.
+
+`syslaunch` gets the SYSTEM token two ways, tried in order:
+
+- **Direct** — duplicate the token from a SYSTEM process (`winlogon`) in the
+  target session. Works only when `syslaunch` itself already runs as SYSTEM
+  (e.g. a SYSTEM autorun), because an Administrator is denied `winlogon`'s token
+  even with `SeDebugPrivilege` (and in an interactive session `winlogon` is the
+  only SYSTEM process — the rest live in session 0).
+- **Service route** — when run as a mere Administrator, install a transient
+  LocalSystem service; the SCM starts it *as SYSTEM*; it sets its own token to
+  the target session and `CreateProcessAsUserW`s onto `winsta0\default`, then
+  stops and is deleted. This is PsExec's `-s` mechanism and needs no
+  `SeDebugPrivilege`. It is the path used at boot (PostShell runs as Admin).
+
+`syslaunch` uses only documented Win32 (token duplication, `SetTokenInformation`,
+the SCM, `CreateProcessAsUserW`) — no undocumented internals. When DWM is present
+StartPE detects it (`DwmIsCompositionEnabled`) and stands down its GDI accent
+frame (`border.rs`) so it doesn't double the native DWM frame, and `peek.rs`
+switches to live DWM thumbnails. Without auto-login the same PostShell line
+degrades to a plain SYSTEM launch in the SYSTEM session (no DWM).
 
 ## Why not …
 

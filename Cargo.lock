@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "startpe"
-version = "0.1.63"
+version = "0.1.64"
 dependencies = [
  "windows",
  "windows-core",
@@ -51,6 +51,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "syslaunch"
+version = "0.1.0"
+dependencies = [
+ "windows",
 ]
 
 [[package]]
