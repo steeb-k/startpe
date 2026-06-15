@@ -1097,8 +1097,13 @@ pub fn reload_config() {
         }
     }
     // Apply the accent window-border toggle live (installs/tears down its hooks)
-    // and repaint it in case the Start-button accent color changed.
-    crate::border::set_enabled(window_borders);
+    // and repaint it in case the Start-button accent color changed. DWM-composited
+    // sessions recolor the native frame; a plain PE uses the GDI overlay.
+    if crate::dwm_border::composition_on() {
+        crate::dwm_border::set_enabled(window_borders);
+    } else {
+        crate::border::set_enabled(window_borders);
+    }
 }
 
 fn hit_test(state: &State, x: i32, y: i32) -> Hit {
@@ -1228,6 +1233,23 @@ fn fill_rounded(hdc: HDC, rect: &RECT, color: u32, radius: i32) {
         SelectObject(hdc, old_brush);
         SelectObject(hdc, old_pen);
         let _ = DeleteObject(brush);
+        let _ = DeleteObject(pen);
+    }
+}
+
+/// Stroke a 1px accent-colored rounded outline along `rect` (pass the same corner
+/// `ellipse` size the window's region used). Gives StartPE's borderless popups a
+/// thin accent edge against the desktop. Uses the live Start-button accent color,
+/// and a null brush so only the outline is drawn. Call it last, into the same DC
+/// the window blits to the screen.
+pub fn accent_ring(hdc: HDC, rect: &RECT, ellipse: i32) {
+    unsafe {
+        let pen = CreatePen(PS_SOLID, 1, COLORREF(start_button_color()));
+        let old_pen = SelectObject(hdc, pen);
+        let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        let _ = RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, ellipse, ellipse);
+        SelectObject(hdc, old_pen);
+        SelectObject(hdc, old_brush);
         let _ = DeleteObject(pen);
     }
 }

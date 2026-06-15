@@ -60,6 +60,16 @@ struct DesktopState {
     ticks: u32,
     /// Last captured layout text, to avoid rewriting the file unchanged.
     last_layout: String,
+    /// The baked layout text, read once and kept so we can re-apply it every
+    /// tick until the desktop icons have actually loaded (their load is async and
+    /// is much slower under the Administrator-login startup path).
+    saved_layout: Option<String>,
+    /// Whether we've finished applying the baked layout and switched to capturing
+    /// changes. Set only once the icon count has settled, so a slow icon load
+    /// can't make us save an empty/default layout over the baked one.
+    applied: bool,
+    /// Last desktop icon count seen, to detect when async loading has settled.
+    last_count: i32,
 }
 
 thread_local! {
@@ -196,6 +206,9 @@ unsafe fn create(cfg: &Config) -> Result<()> {
             listview: HWND::default(),
             ticks: 0,
             last_layout: String::new(),
+            saved_layout: None,
+            applied: false,
+            last_count: -1,
         })
     });
 
@@ -830,13 +843,23 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_TIMER if wp.0 == TIMER_LAYOUT => {
             // Resolve state, then act outside the borrow (file I/O + list msgs).
-            let (tick, mut lv, view_hwnd, view, last) = DESKTOP.with_borrow_mut(|d| match d {
-                Some(d) => {
-                    d.ticks += 1;
-                    (d.ticks, d.listview, d.view_hwnd, d._view.clone(), d.last_layout.clone())
-                }
-                None => (0, HWND::default(), HWND::default(), None, String::new()),
-            });
+            let (tick, mut lv, view_hwnd, view, last, mut applied, mut saved, mut last_count) =
+                DESKTOP.with_borrow_mut(|d| match d {
+                    Some(d) => {
+                        d.ticks += 1;
+                        (
+                            d.ticks,
+                            d.listview,
+                            d.view_hwnd,
+                            d._view.clone(),
+                            d.last_layout.clone(),
+                            d.applied,
+                            d.saved_layout.clone(),
+                            d.last_count,
+                        )
+                    }
+                    None => (0, HWND::default(), HWND::default(), None, String::new(), false, None, -1),
+                });
 
             // The SysListView32 is created asynchronously after CreateViewWindow.
             // Once it appears, set the view flags (auto-arrange off / snap-to-grid
@@ -872,13 +895,47 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 return LRESULT(0); // list not up yet; try next tick
             }
 
-            if tick <= 4 {
-                // Items load asynchronously; apply the saved layout a few times.
-                if let Some(p) = layout_path() {
-                    if let Ok(text) = std::fs::read_to_string(&p) {
-                        apply_layout(lv, &text);
+            // Read the baked layout once and keep it, so we can re-apply it on
+            // every tick until the icons finish loading.
+            if saved.is_none() {
+                saved = Some(
+                    layout_path()
+                        .and_then(|p| std::fs::read_to_string(&p).ok())
+                        .unwrap_or_default(),
+                );
+                let s = saved.clone();
+                DESKTOP.with_borrow_mut(|d| {
+                    if let Some(d) = d {
+                        d.saved_layout = s;
+                    }
+                });
+            }
+
+            if !applied {
+                // Desktop icons load asynchronously (slowly under the Admin-login
+                // startup). Keep applying the baked positions until the icon count
+                // settles, and only THEN switch to capture mode — otherwise we'd
+                // save an empty/default layout over the baked one before icons
+                // appeared (the regression seen with Administrator login).
+                let count = list_item_count(lv);
+                if count > 0 {
+                    if let Some(text) = saved.as_deref() {
+                        if !text.trim().is_empty() {
+                            apply_layout(lv, text);
+                        }
+                    }
+                    // Two consecutive equal, non-zero counts = loading has settled.
+                    if count == last_count {
+                        applied = true;
                     }
                 }
+                last_count = count;
+                DESKTOP.with_borrow_mut(|d| {
+                    if let Some(d) = d {
+                        d.applied = applied;
+                        d.last_count = last_count;
+                    }
+                });
             } else {
                 let cur = capture_layout(lv);
                 if cur != last {

@@ -393,6 +393,8 @@ fn paint(p: &PeekState) {
         }
 
         SelectObject(hdc, old_font);
+        // 1px accent ring (borderless window, matches the region's scaled(16) corners).
+        crate::taskbar::accent_ring(hdc, &full, scaled(16));
         let _ = EndPaint(p.hwnd, &ps);
     }
 }

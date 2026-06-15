@@ -753,6 +753,8 @@ fn paint(state: &State) {
         draw_button(mem, state, &lay.cancel, "Cancel", Hover::Cancel, false);
         draw_button(mem, state, &lay.browse, "Browse\u{2026}", Hover::Browse, false);
 
+        // 1px accent ring (this window is borderless, so it has no native frame).
+        crate::taskbar::accent_ring(mem, &rc, scaled(16));
         let _ = BitBlt(hdc, 0, 0, width, height, mem, 0, 0, SRCCOPY);
         SelectObject(mem, old_bmp);
         let _ = DeleteObject(HGDIOBJ(bmp.0));

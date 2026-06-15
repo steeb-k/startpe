@@ -697,6 +697,16 @@ fn paint(m: &MenuState) {
         draw_footer(m, mem);
         draw_avatar(m, mem);
 
+        // 1px accent ring around the menu body (below the protruding avatar),
+        // matching the body region's corners.
+        let ring = RECT {
+            left: 0,
+            top: body_top(),
+            right: m.width,
+            bottom: m.height,
+        };
+        crate::taskbar::accent_ring(mem, &ring, scaled(RADIUS) * 2);
+
         // Hide the caret across the blit so it isn't corrupted, then restore it.
         let _ = HideCaret(m.hwnd);
         let _ = BitBlt(hdc, 0, 0, m.width, m.height, mem, 0, 0, SRCCOPY);
