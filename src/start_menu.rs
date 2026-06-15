@@ -83,6 +83,11 @@ struct Item {
 /// `ShellExecute`'d.
 const RUN_DIALOG_CMD: &str = "@startpe:run-dialog";
 
+/// Sentinel `RightItem::cmd` that opens the configured file browser
+/// (`taskbar::open_file_manager`) instead of being `ShellExecute`'d — so "This
+/// PC" uses the SYSTEM-capable file manager in the DWM/Administrator PE.
+const FILE_MANAGER_CMD: &str = "@startpe:file-manager";
+
 /// Right-pane link. Launched as `ShellExecute(cmd, args)`; a bare folder
 /// path as `cmd` opens in Explorer.
 struct RightItem {
@@ -266,8 +271,8 @@ fn build_right_items() -> Vec<RightItem> {
         RightItem {
             glyph: GLYPH_PC,
             label: "This PC".to_string(),
-            cmd: "explorer.exe".to_string(),
-            args: "shell:MyComputerFolder".to_string(),
+            cmd: FILE_MANAGER_CMD.to_string(),
+            args: String::new(),
         },
         RightItem {
             glyph: GLYPH_CONTROL,
@@ -1190,7 +1195,11 @@ fn perform(hwnd: HWND, action: Action) {
         }
         Action::Exec(cmd, args) => {
             hide(hwnd);
-            exec(&cmd, &args);
+            if cmd == FILE_MANAGER_CMD {
+                crate::taskbar::open_file_manager();
+            } else {
+                exec(&cmd, &args);
+            }
         }
         Action::RunDialog => {
             hide(hwnd);
