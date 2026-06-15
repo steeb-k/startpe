@@ -662,6 +662,9 @@ fn paint(state: &State) {
         }
 
         SelectObject(mem, old);
+        // 1px accent ring (borderless window, matches the region's scaled(10) corners).
+        let ring = RECT { left: 0, top: 0, right: width, bottom: height };
+        crate::taskbar::accent_ring(mem, &ring, scaled(10));
         let _ = BitBlt(hdc, 0, 0, width, height, mem, 0, 0, SRCCOPY);
         SelectObject(mem, old_bmp);
         let _ = DeleteObject(HGDIOBJ(bmp.0));

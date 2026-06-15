@@ -66,6 +66,8 @@ updated when behavior or config values change.
   `peek.rs` (hover previews), `alttab.rs` (Win11-style Alt+Tab switcher: LL
   keyboard hook + `PrintWindow` screenshot grid), `menu.rs` (dark owner-drawn
   popup menus), `darkmode.rs` (uxtheme dark app mode for shell menus),
+  `border.rs` (accent window frame, no-DWM GDI overlay) and `dwm_border.rs`
+  (accent frame for the DWM path via `DWMWA_BORDER_COLOR`, accent/gray by focus),
   `run_window.rs` (from-scratch dark Run window), `settings.rs` (dark
   settings pane: boolean config switches + Start button color picker, opened
   from the taskbar menu), `config.rs` (registry), `util.rs` (UTF-16).

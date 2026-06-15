@@ -138,13 +138,17 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   a row would pass ~85% of the screen width. No DWM dependency (static
   screenshots, not live thumbnails); releasing Alt / Enter / a click activates
   the selection, Esc cancels
-- `src/border.rs` — accent-colored frame around the foreground, non-maximized
-  window (opt-out `WindowBorders`, default on). A click-through, never-activated
-  `WS_POPUP` overlay shaped to a thin ring by `SetWindowRgn`, kept positioned
-  over the active window and just above it in Z order, following it via
-  `SetWinEventHook` (foreground/move/size/minimize/destroy). Foreground-only by
-  design: WinPE has no DWM, so a background window's frame couldn't be occluded
-  by whatever sits in front of it. Painted in the `StartButtonColor` accent
+- `src/border.rs` — accent window frame for the **no-DWM** path (plain PE).
+  Opt-out `WindowBorders`, default on. A click-through, never-activated `WS_POPUP`
+  overlay shaped to a thin ring by `SetWindowRgn`, kept positioned over the active
+  window and just above it in Z order, following it via `SetWinEventHook`
+  (foreground/move/size/minimize/destroy). Foreground-only by design (no DWM to
+  occlude background frames). Painted in the `StartButtonColor` accent
+- `src/dwm_border.rs` — accent window frame for the **DWM** path. Recolors the
+  real Win11 1px border via `DWMWA_BORDER_COLOR`: accent on the foreground window,
+  gray when it loses focus. No overlay/drawing. `main.rs` picks this vs
+  `border.rs` from `DwmIsCompositionEnabled`. StartPE's own borderless windows are
+  excluded (they draw their own 1px ring via `taskbar::accent_ring`)
 - `src/desktop.rs` — StartPE-owned desktop (wallpaper + hosted Public Desktop
   icon view with its own icon-layout save/restore), created only when Explorer's
   own desktop never appears
@@ -195,7 +199,7 @@ Current values (all `REG_DWORD`):
 | `ShowSystemDesktopIcons` | 0 | 1 = show the built-in desktop namespace icons (This PC, Home, Network, Control Panel, Recycle Bin); 0 = hide them so only real shortcuts show |
 | `StartButtonColor` | 15096500 | Start button glyph color COLORREF (0x00BBGGRR); default 0x00E65AB4 (purple, RGB 180,90,230) |
 | `DarkMenus` | 1 | 1 = dark-mode the shell menus created in our process (chiefly the hosted desktop's right-click context menu) via uxtheme dark app mode; 0 = leave them light (see `darkmode.rs`) |
-| `WindowBorders` | 1 | 1 = draw an accent-colored frame (in the `StartButtonColor`) around the foreground, non-maximized window; 0 = off. A GDI overlay, since WinPE lacks DWM `DWMWA_BORDER_COLOR` (see `border.rs`) |
+| `WindowBorders` | 1 | 1 = accent the active window's frame in the `StartButtonColor`; 0 = off. With DWM on, recolors the real 1px border via `DWMWA_BORDER_COLOR` (accent focused, gray unfocused — `dwm_border.rs`); without DWM, a GDI ring overlay (`border.rs`). StartPE's own borderless windows always draw a 1px accent ring (`taskbar::accent_ring`) |
 | `LaunchAsSystem` | 0 | 1 = if StartPE starts under a lesser token, re-launch itself as SYSTEM via `syslaunch.exe` and exit (so it ends up SYSTEM no matter which vector started it). The PE build sets 1 for the Administrator-auto-login + DWM mode; default 0 so a normal run never elevates (see `main.rs`, `syslaunch/`) |
 
 Launch: the PEBakery script writes the Run key for classic logon flows and
@@ -338,10 +342,10 @@ So StartPE gets DWM by **decoupling who logs on from what the shell runs as**:
 
 `syslaunch` uses only documented Win32 (token duplication, `SetTokenInformation`,
 the SCM, `CreateProcessAsUserW`) — no undocumented internals. When DWM is present
-StartPE detects it (`DwmIsCompositionEnabled`) and stands down its GDI accent
-frame (`border.rs`) so it doesn't double the native DWM frame, and `peek.rs`
-switches to live DWM thumbnails. Without auto-login the same PostShell line
-degrades to a plain SYSTEM launch in the SYSTEM session (no DWM).
+StartPE detects it (`DwmIsCompositionEnabled`) and recolors the real Win11 window
+frame via `dwm_border.rs` instead of drawing the GDI overlay (`border.rs`), and
+`peek.rs` switches to live DWM thumbnails. Without auto-login the same PostShell
+line degrades to a plain SYSTEM launch in the SYSTEM session (no DWM).
 
 ## Why not …
 

@@ -15,6 +15,7 @@ mod border;
 mod config;
 mod darkmode;
 mod desktop;
+mod dwm_border;
 mod menu;
 mod peek;
 mod run_window;
@@ -210,7 +211,14 @@ fn main() -> windows::core::Result<()> {
         tray::create(taskbar.hwnd)?;
         taskbar::install_win_key_hook();
         alttab::install();
-        border::install(cfg.window_borders);
+        // Real (framed) windows: recolor their native border via DWM when it's
+        // present (accent when focused, gray otherwise); fall back to the GDI
+        // accent overlay only in a plain PE with no composition.
+        if dwm_border::composition_on() {
+            dwm_border::install(cfg.window_borders);
+        } else {
+            border::install(cfg.window_borders);
+        }
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {

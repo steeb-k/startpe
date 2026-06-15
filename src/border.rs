@@ -16,12 +16,9 @@
 //! `SetWinEventHook` (foreground changes, move/size via `LOCATIONCHANGE`,
 //! minimize, destroy) rather than polling.
 //!
-//! The overlay runs **with or without DWM**. DWM's own `DWMWA_BORDER_COLOR` only
-//! tints the ~1px native frame and only on windows that *have* a frame — it can't
-//! give a borderless `WS_POPUP` (StartPE's Run/SysInfo windows, custom PE apps) a
-//! border at all, nor a 3px accent. So this overlay is what draws the accent on
-//! every foreground window. When DWM composition is on it rounds the frame to
-//! match Win11's corners; without DWM it draws square.
+//! This overlay is the **no-DWM path**: it draws the accent border in a plain PE
+//! that has no composition. When DWM is present, `dwm_border.rs` recolors the
+//! real Win11 frame instead and this module is not installed (see `main.rs`).
 //!
 //! The accent color is `taskbar::start_button_color()` (read live), so the
 //! border tracks the Start-button color and any runtime change to it.
@@ -76,19 +73,6 @@ const SETTLE_TICKS: i32 = 5;
 
 thread_local! {
     static BORDER: RefCell<Option<Border>> = const { RefCell::new(None) };
-}
-
-/// Best-effort version-stamped line to `X:\startpe.log` (PE has no Event Viewer,
-/// so we leave a trail of which binary made which decision).
-fn log_line(msg: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("X:\\startpe.log")
-    {
-        let _ = writeln!(f, "StartPE v{} border: {}", env!("CARGO_PKG_VERSION"), msg);
-    }
 }
 
 /// Create the overlay + install the WinEvent hooks if `enabled`. Called once at
@@ -186,11 +170,6 @@ fn ensure_installed() {
         }
 
         let rounded = DwmIsCompositionEnabled().map(|b| b.as_bool()).unwrap_or(false);
-        log_line(if rounded {
-            "accent overlay installed (DWM on: rounded frame over the native border)"
-        } else {
-            "accent overlay installed (no DWM: square frame)"
-        });
         let taskbar = FindWindowW(w!("StartPE_Taskbar"), PCWSTR_NULL).unwrap_or_default();
         BORDER.with_borrow_mut(|b| {
             *b = Some(Border {
