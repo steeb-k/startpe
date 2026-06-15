@@ -28,7 +28,7 @@ jobs:
           #   dll_asset: startpe_loader-arm64.dll
           #   syslaunch_asset: syslaunch-arm64.exe
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install target
         run: rustup target add ${{ matrix.target }}
@@ -48,7 +48,7 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/syslaunch.exe" "${{ matrix.syslaunch_asset }}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
           path: |
@@ -58,7 +58,7 @@ jobs:
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             ${{ matrix.exe_asset }}
