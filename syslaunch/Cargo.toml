@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "syslaunch"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Spawn a program as SYSTEM on a chosen session's desktop (PsExec -s -i style). Used to run StartPE + recovery tools as SYSTEM inside a DWM-composited interactive session in WinPE."
+repository = "https://github.com/steeb-k/startpe"
+
+[[bin]]
+name = "syslaunch"
+path = "src/main.rs"
+
+[dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Services",
+]

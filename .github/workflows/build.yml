@@ -21,10 +21,12 @@ jobs:
           - target: x86_64-pc-windows-msvc
             exe_asset: startpe.exe
             dll_asset: startpe_loader.dll
+            syslaunch_asset: syslaunch.exe
           # TODO: re-enable ARM64 builds later (temporarily disabled).
           # - target: aarch64-pc-windows-msvc
           #   exe_asset: startpe-arm64.exe
           #   dll_asset: startpe_loader-arm64.dll
+          #   syslaunch_asset: syslaunch-arm64.exe
     steps:
       - uses: actions/checkout@v4
 
@@ -35,13 +37,15 @@ jobs:
       - name: Build
         run: cargo build --release --workspace --target ${{ matrix.target }}
 
-      # Release assets keep the names the PEBakery script expects
-      # (startpe.exe / startpe-arm64.exe, startpe_loader.dll / startpe_loader-arm64.dll).
+      # Release assets keep the names the PEBakery script expects (startpe.exe /
+      # startpe-arm64.exe, startpe_loader.dll / startpe_loader-arm64.dll,
+      # syslaunch.exe / syslaunch-arm64.exe).
       - name: Stage assets
         shell: pwsh
         run: |
           Copy-Item "target/${{ matrix.target }}/release/startpe.exe" "${{ matrix.exe_asset }}"
           Copy-Item "target/${{ matrix.target }}/release/startpe_loader.dll" "${{ matrix.dll_asset }}"
+          Copy-Item "target/${{ matrix.target }}/release/syslaunch.exe" "${{ matrix.syslaunch_asset }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -50,6 +54,7 @@ jobs:
           path: |
             ${{ matrix.exe_asset }}
             ${{ matrix.dll_asset }}
+            ${{ matrix.syslaunch_asset }}
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
@@ -58,4 +63,5 @@ jobs:
           files: |
             ${{ matrix.exe_asset }}
             ${{ matrix.dll_asset }}
+            ${{ matrix.syslaunch_asset }}
           generate_release_notes: true

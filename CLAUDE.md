@@ -28,6 +28,14 @@ updated when behavior or config values change.
  that would otherwise black-screen. This is the one place undocumented
  Explorer-internals work is allowed; keep it confined to `loader/` and keep
  `startpe.exe` clean so the main binary still survives Windows updates.
+- **`syslaunch/` builds `syslaunch.exe`** (separate workspace crate, NOT part of
+ `startpe.exe`): runs a program as SYSTEM on a chosen interactive session's
+ desktop, so StartPE can be DWM-composited while keeping SYSTEM privileges. It is
+ how StartPE gets DWM on 25H2 PE — the build auto-logs-in as Administrator (so
+ `winlogon` spawns `dwm.exe`) and the PostShell autorun uses `syslaunch` to
+ re-launch StartPE as SYSTEM into that composited session (service route, PsExec
+ `-s` style). Documented Win32 only (token duplication + SCM + `CreateProcessAsUserW`);
+ no Explorer/undocumented internals. See `docs/ARCHITECTURE.md` → "DWM under SYSTEM".
 - **Must work in plain WinPE**: no DWM composition (rounded corners use GDI
   window regions, peek falls back from thumbnails to rows), no .NET, possibly
   limited fonts (UI glyphs use Segoe MDL2 Assets — degrade gracefully if you

@@ -1,9 +1,9 @@
 [workspace]
-members = ["loader"]
+members = ["loader", "syslaunch"]
 
 [package]
 name = "startpe"
-version = "0.1.63"
+version = "0.1.64"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Free, open-source taskbar and start menu for Windows PE environments"

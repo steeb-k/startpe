@@ -16,6 +16,11 @@
 //! `SetWinEventHook` (foreground changes, move/size via `LOCATIONCHANGE`,
 //! minimize, destroy) rather than polling.
 //!
+//! **When DWM composition is on** (e.g. a PE booted with an interactive logon so
+//! `winlogon` spawns `dwm.exe`), Windows already draws its own active-window
+//! frame, so this overlay would double up. In that case we install nothing and
+//! defer to the native frame — the whole module is a no-DWM fallback.
+//!
 //! The accent color is `taskbar::start_button_color()` (read live), so the
 //! border tracks the Start-button color and any runtime change to it.
 
@@ -71,6 +76,19 @@ thread_local! {
     static BORDER: RefCell<Option<Border>> = const { RefCell::new(None) };
 }
 
+/// Best-effort version-stamped line to `X:\startpe.log` (PE has no Event Viewer,
+/// so we leave a trail of which binary made which decision).
+fn log_line(msg: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("X:\\startpe.log")
+    {
+        let _ = writeln!(f, "StartPE v{} border: {}", env!("CARGO_PKG_VERSION"), msg);
+    }
+}
+
 /// Create the overlay + install the WinEvent hooks if `enabled`. Called once at
 /// startup; a no-op (leaves nothing installed) when the feature is off.
 pub fn install(enabled: bool) {
@@ -111,6 +129,17 @@ pub fn refresh() {
 
 fn ensure_installed() {
     if BORDER.with_borrow(|b| b.is_some()) {
+        return;
+    }
+    // With DWM composition on, Windows draws the active window's frame itself, so
+    // our GDI accent overlay would double the border. Stand down and let the
+    // native frame show — this overlay only exists to substitute for the missing
+    // DWM frame in a plain PE.
+    if unsafe { DwmIsCompositionEnabled() }
+        .map(|b| b.as_bool())
+        .unwrap_or(false)
+    {
+        log_line("window border overlay disabled (DWM composition is on)");
         return;
     }
     unsafe {

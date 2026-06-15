@@ -17,8 +17,8 @@ Author=steeb-k
 Level=3
 Selected=True
 Mandatory=False
-Version=0.1.63.0
-Date=2026-06-13
+Version=0.1.64.0
+Date=2026-06-14
 
 [Variables]
 %ProgramFolder%=StartPE
@@ -27,6 +27,10 @@ Date=2026-06-13
 // Explorer-side loader DLL (injected via FolderExtensions) — arch-matched to the binary.
 %LoaderX64%=startpe_loader.dll
 %LoaderA64%=startpe_loader-arm64.dll
+// SYSTEM launcher: re-launches startpe.exe as SYSTEM onto the interactive
+// (DWM-composited) session's desktop. See syslaunch/ and the PostShell autorun.
+%SysLaunchX64%=syslaunch.exe
+%SysLaunchA64%=syslaunch-arm64.exe
 // COM CLSID used to get the loader pulled into Explorer at shell startup.
 %LoaderCLSID%={6F3D9B2A-1C4E-4E7A-9B58-2E1D7C0A5F31}
 // Base URL for release builds; the arch-specific binary name is appended.
@@ -46,17 +50,21 @@ If,%cb_AlwaysDownload%,Equal,True,DirDeleteEx,"%ProgramsCache%\%ProgramFolder%"
 If,%SourceArch%,Equal,x64,Begin
   Set,%BinaryName%,%BinaryX64%
   Set,%LoaderName%,%LoaderX64%
+  Set,%SysLaunchName%,%SysLaunchX64%
 End
 Else,If,%SourceArch%,Equal,ARM64,Begin
   Set,%BinaryName%,%BinaryA64%
   Set,%LoaderName%,%LoaderA64%
+  Set,%SysLaunchName%,%SysLaunchA64%
 End
 Else,Halt,"StartPE ERROR: Unsupported processor architecture [%SourceArch%]."
 
 If,Not,ExistFile,"%ProgramsCache%\%ProgramFolder%\%BinaryName%",Run,%ScriptFile%,DownloadProgram
 If,Not,ExistFile,"%ProgramsCache%\%ProgramFolder%\%LoaderName%",Run,%ScriptFile%,DownloadProgram
+If,Not,ExistFile,"%ProgramsCache%\%ProgramFolder%\%SysLaunchName%",Run,%ScriptFile%,DownloadProgram
 FileCopy,"%ProgramsCache%\%ProgramFolder%\%BinaryName%","%TargetPrograms%\%ProgramFolder%\%BinaryName%"
 FileCopy,"%ProgramsCache%\%ProgramFolder%\%LoaderName%","%TargetPrograms%\%ProgramFolder%\%LoaderName%"
+FileCopy,"%ProgramsCache%\%ProgramFolder%\%SysLaunchName%","%TargetPrograms%\%ProgramFolder%\%SysLaunchName%"
 
 Run,%ScriptFile%,Config
 
@@ -103,11 +111,18 @@ RegWrite,HKLM,REG_SZ,"Tmp_Software\Classes\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B
 RegWrite,HKLM,REG_SZ,"Tmp_Software\Classes\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\shell\Properties\command","","#$q%PEPrograms%\%ProgramFolder%\%BinaryName%#$q --sysinfo"
 RegWrite,HKLM,REG_SZ,"Tmp_Software\Classes\CLSID\{BB06C0E4-D293-4f75-8A90-CB05B6477EEE}\shell\open\command","","#$q%PEPrograms%\%ProgramFolder%\%BinaryName%#$q --sysinfo"
 
-// winrx-creator / PhoenixPE: WinRxCreator.au3 starts Explorer as SYSTEM; the
-// Default-user Run key is not processed on that path. PostShell matches HotSwap
-// and other apps that must run after the shell is up. StartPE is
-// single-instance, so the loader launching it too is harmless.
-AddAutoRun,PostShell,NoWait,"StartPE","%PEPrograms%\%ProgramFolder%\%BinaryName%"
+// Launch StartPE through syslaunch so it runs as SYSTEM on the *interactive*
+// session's desktop. With "Logon as Admin" auto-login on (LogonAsAdmin:
+// cb_AutoAdminLogin=True, cb_PatchSessionMgr=False — the session-switch patch
+// hard-crashes 25H2, and we log into Admin once and never switch back),
+// winlogon spawns dwm.exe and composites that session. PostShell here runs as
+// the Administrator, so syslaunch installs a transient LocalSystem service that
+// re-launches startpe.exe as SYSTEM onto winsta0\default. Net: StartPE keeps
+// SYSTEM (ACL-skipping for data recovery) AND gets DWM (dark titlebars, live
+// thumbnails). Without auto-login it degrades to a plain SYSTEM launch in the
+// SYSTEM session (no DWM). StartPE is single-instance, so the loader launching
+// it too is harmless. See syslaunch/ and docs/ARCHITECTURE.md.
+AddAutoRun,PostShell,NoWait,"StartPE","%PEPrograms%\%ProgramFolder%\%SysLaunchName%","#$q%PEPrograms%\%ProgramFolder%\%BinaryName%#$q"
 
 // Stop WinRxCreator.au3 from relaunching Explorer when it exits. On this PE
 // Explorer's shell init fail-fasts and exits immediately, so the au3's
@@ -222,6 +237,8 @@ WebGet,"%DownloadURL%%BinaryName%","%ProgramsCache%\%ProgramFolder%\%BinaryName%
 If,Not,#r,Equal,200,Halt,"Download failed: The code returned was [#r]."
 WebGet,"%DownloadURL%%LoaderName%","%ProgramsCache%\%ProgramFolder%\%LoaderName%",NOERR
 If,Not,#r,Equal,200,Halt,"Download failed (loader): The code returned was [#r]."
+WebGet,"%DownloadURL%%SysLaunchName%","%ProgramsCache%\%ProgramFolder%\%SysLaunchName%",NOERR
+If,Not,#r,Equal,200,Halt,"Download failed (syslaunch): The code returned was [#r]."
 
 [#ClearDownloadCache#]
 [ClearDownloadCache]
