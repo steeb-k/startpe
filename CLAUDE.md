@@ -32,10 +32,13 @@ updated when behavior or config values change.
  `startpe.exe`): runs a program as SYSTEM on a chosen interactive session's
  desktop, so StartPE can be DWM-composited while keeping SYSTEM privileges. It is
  how StartPE gets DWM on 25H2 PE — the build auto-logs-in as Administrator (so
- `winlogon` spawns `dwm.exe`) and the PostShell autorun uses `syslaunch` to
- re-launch StartPE as SYSTEM into that composited session (service route, PsExec
- `-s` style). Documented Win32 only (token duplication + SCM + `CreateProcessAsUserW`);
- no Explorer/undocumented internals. See `docs/ARCHITECTURE.md` → "DWM under SYSTEM".
+ `winlogon` spawns `dwm.exe`) and StartPE self-promotes: with `LaunchAsSystem=1`
+ it re-launches itself as SYSTEM via `syslaunch` when it starts under a lesser
+ token (vector-agnostic — beats the launch-vector race for the single-instance
+ mutex). syslaunch uses the LocalSystem service route (PsExec `-s` style) when run
+ as a mere Administrator. Documented Win32 only (token duplication + SCM +
+ `CreateProcessAsUserW`); no Explorer/undocumented internals. See
+ `docs/ARCHITECTURE.md` → "DWM under SYSTEM".
 - **Must work in plain WinPE**: no DWM composition (rounded corners use GDI
   window regions, peek falls back from thumbnails to rows), no .NET, possibly
   limited fonts (UI glyphs use Segoe MDL2 Assets — degrade gracefully if you

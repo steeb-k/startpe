@@ -196,6 +196,7 @@ Current values (all `REG_DWORD`):
 | `StartButtonColor` | 15096500 | Start button glyph color COLORREF (0x00BBGGRR); default 0x00E65AB4 (purple, RGB 180,90,230) |
 | `DarkMenus` | 1 | 1 = dark-mode the shell menus created in our process (chiefly the hosted desktop's right-click context menu) via uxtheme dark app mode; 0 = leave them light (see `darkmode.rs`) |
 | `WindowBorders` | 1 | 1 = draw an accent-colored frame (in the `StartButtonColor`) around the foreground, non-maximized window; 0 = off. A GDI overlay, since WinPE lacks DWM `DWMWA_BORDER_COLOR` (see `border.rs`) |
+| `LaunchAsSystem` | 0 | 1 = if StartPE starts under a lesser token, re-launch itself as SYSTEM via `syslaunch.exe` and exit (so it ends up SYSTEM no matter which vector started it). The PE build sets 1 for the Administrator-auto-login + DWM mode; default 0 so a normal run never elevates (see `main.rs`, `syslaunch/`) |
 
 Launch: the PEBakery script writes the Run key for classic logon flows and
 calls `AddAutoRun,PostShell` so winrx-creator/PhoenixPE images start StartPE
@@ -311,11 +312,16 @@ So StartPE gets DWM by **decoupling who logs on from what the shell runs as**:
    session-switch patch hard-crashes 25H2, and we log into Admin once and never
    switch back). `winlogon` brings up an interactive Administrator session, so
    `dwm.exe` runs and composites it.
-2. The Admin session's PostShell autorun launches StartPE via
-   `syslaunch.exe "<path>\startpe.exe"` instead of directly. `syslaunch` obtains
-   a SYSTEM token and re-launches StartPE as SYSTEM onto that session's
-   `winsta0\default` desktop — so StartPE keeps SYSTEM (ACL-skipping for data
-   recovery) **and** is composited by DWM.
+2. StartPE **self-promotes to SYSTEM**. The PE build sets `LaunchAsSystem=1`;
+   when StartPE starts under a lesser token (the Administrator), it re-launches
+   itself as SYSTEM via `syslaunch.exe` and exits. So whichever vector starts
+   StartPE — the PostShell autorun, the Default-user Run key, or the Explorer
+   loader — the instance that actually runs is SYSTEM, composited by DWM. This is
+   vector-agnostic by design: those vectors otherwise race for StartPE's
+   single-instance mutex and an Administrator instance can win (`pid` from the
+   Run key beat the intended SYSTEM one in testing). StartPE keeps SYSTEM
+   (ACL-skipping for data recovery) **and** is composited by DWM. The re-launched
+   instance carries `--from-syslaunch` so it never loops if elevation didn't take.
 
 `syslaunch` gets the SYSTEM token two ways, tried in order:
 

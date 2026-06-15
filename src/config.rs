@@ -56,6 +56,13 @@ pub struct Config {
     /// Draw an accent-colored frame around the foreground (non-maximized)
     /// window, in the Start-button color. Default on. See `border.rs`.
     pub window_borders: bool,
+    /// Re-launch StartPE as SYSTEM (via `syslaunch.exe`, sibling to the exe) when
+    /// it finds itself running under a lesser token, so it ends up SYSTEM no
+    /// matter which vector started it (Run key, loader, autorun). Set to 1 by the
+    /// PE build, where an Administrator auto-login provides the DWM-composited
+    /// session but the tools must still run as SYSTEM. Default off (so a normal
+    /// run never tries to elevate). See `main.rs` and `syslaunch/`.
+    pub launch_as_system: bool,
 }
 
 impl Default for Config {
@@ -76,6 +83,7 @@ impl Default for Config {
             start_button_color: 0x00E6_5AB4,
             dark_menus: true,
             window_borders: true,
+            launch_as_system: false,
         }
     }
 }
@@ -143,6 +151,9 @@ impl Config {
         }
         if let Ok(v) = key.get_value::<u32, _>("WindowBorders") {
             self.window_borders = v != 0;
+        }
+        if let Ok(v) = key.get_value::<u32, _>("LaunchAsSystem") {
+            self.launch_as_system = v != 0;
         }
     }
 }

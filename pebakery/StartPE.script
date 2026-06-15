@@ -17,7 +17,7 @@ Author=steeb-k
 Level=3
 Selected=True
 Mandatory=False
-Version=0.1.64.0
+Version=0.1.65.0
 Date=2026-06-14
 
 [Variables]
@@ -111,18 +111,22 @@ RegWrite,HKLM,REG_SZ,"Tmp_Software\Classes\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B
 RegWrite,HKLM,REG_SZ,"Tmp_Software\Classes\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\shell\Properties\command","","#$q%PEPrograms%\%ProgramFolder%\%BinaryName%#$q --sysinfo"
 RegWrite,HKLM,REG_SZ,"Tmp_Software\Classes\CLSID\{BB06C0E4-D293-4f75-8A90-CB05B6477EEE}\shell\open\command","","#$q%PEPrograms%\%ProgramFolder%\%BinaryName%#$q --sysinfo"
 
-// Launch StartPE through syslaunch so it runs as SYSTEM on the *interactive*
-// session's desktop. With "Logon as Admin" auto-login on (LogonAsAdmin:
-// cb_AutoAdminLogin=True, cb_PatchSessionMgr=False — the session-switch patch
-// hard-crashes 25H2, and we log into Admin once and never switch back),
-// winlogon spawns dwm.exe and composites that session. PostShell here runs as
-// the Administrator, so syslaunch installs a transient LocalSystem service that
-// re-launches startpe.exe as SYSTEM onto winsta0\default. Net: StartPE keeps
-// SYSTEM (ACL-skipping for data recovery) AND gets DWM (dark titlebars, live
-// thumbnails). Without auto-login it degrades to a plain SYSTEM launch in the
-// SYSTEM session (no DWM). StartPE is single-instance, so the loader launching
-// it too is harmless. See syslaunch/ and docs/ARCHITECTURE.md.
-AddAutoRun,PostShell,NoWait,"StartPE","%PEPrograms%\%ProgramFolder%\%SysLaunchName%","#$q%PEPrograms%\%ProgramFolder%\%BinaryName%#$q"
+// Launch StartPE. With LaunchAsSystem=1 (set below) it self-promotes to SYSTEM:
+// if it comes up under a lesser token — the Administrator auto-login that makes
+// winlogon spawn dwm.exe and composite the session (enable winrx LogonAsAdmin
+// with cb_AutoAdminLogin=True, cb_PatchSessionMgr=False; that session-switch
+// patch hard-crashes 25H2 and we never switch back) — StartPE re-launches itself
+// as SYSTEM via syslaunch.exe and exits. So the running instance is always
+// SYSTEM regardless of which vector started it (this autorun, the Default-user
+// Run key, or the loader), giving SYSTEM (ACL-skipping for data recovery) AND
+// DWM (dark titlebars, live thumbnails). StartPE is single-instance, so multiple
+// launch vectors are harmless. See syslaunch/ and docs/ARCHITECTURE.md.
+AddAutoRun,PostShell,NoWait,"StartPE","%PEPrograms%\%ProgramFolder%\%BinaryName%"
+
+// Re-launch StartPE as SYSTEM (via syslaunch.exe) when it starts under a lesser
+// token. 1 = on (required for the DWM-under-SYSTEM mode above); 0 = run with
+// whatever token launched it. Harmless when the shell already runs as SYSTEM.
+RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","LaunchAsSystem",1
 
 // Stop WinRxCreator.au3 from relaunching Explorer when it exits. On this PE
 // Explorer's shell init fail-fasts and exits immediately, so the au3's
