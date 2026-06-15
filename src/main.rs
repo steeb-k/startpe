@@ -27,8 +27,11 @@ mod tray;
 mod util;
 
 use windows::core::w;
-use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
-use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
+use windows::Win32::Security::{
+    GetTokenInformation, IsWellKnownSid, TokenUser, WinLocalSystemSid, TOKEN_QUERY, TOKEN_USER,
+};
+use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcess, OpenProcessToken};
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
@@ -50,6 +53,80 @@ fn log_startup() {
             env!("CARGO_PKG_VERSION"),
             std::process::id()
         );
+    }
+}
+
+/// Append a version-stamped line to `X:\startpe.log` (best-effort).
+fn log(msg: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("X:\\startpe.log")
+    {
+        let _ = writeln!(f, "StartPE v{} {}", env!("CARGO_PKG_VERSION"), msg);
+    }
+}
+
+/// True if this process's token is the Local System account (S-1-5-18).
+fn is_system() -> bool {
+    unsafe {
+        let mut tok = HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut tok).is_err() {
+            return false;
+        }
+        // First call sizes the buffer, second fills it.
+        let mut len = 0u32;
+        let _ = GetTokenInformation(tok, TokenUser, None, 0, &mut len);
+        let mut buf = vec![0u8; len as usize];
+        let ok = len > 0
+            && GetTokenInformation(
+                tok,
+                TokenUser,
+                Some(buf.as_mut_ptr() as *mut core::ffi::c_void),
+                len,
+                &mut len,
+            )
+            .is_ok();
+        let result = ok && {
+            let tu = &*(buf.as_ptr() as *const TOKEN_USER);
+            IsWellKnownSid(tu.User.Sid, WinLocalSystemSid).as_bool()
+        };
+        let _ = CloseHandle(tok);
+        result
+    }
+}
+
+/// Re-launch this exe as SYSTEM via the sibling `syslaunch.exe`. Returns true if
+/// the hand-off was dispatched (the caller should then exit so the SYSTEM
+/// instance takes the single-instance slot).
+fn relaunch_as_system() -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let Some(syslaunch) = exe.parent().map(|d| d.join("syslaunch.exe")) else {
+        return false;
+    };
+    if !syslaunch.exists() {
+        log("launch-as-system: syslaunch.exe not found next to startpe.exe");
+        return false;
+    }
+    match std::process::Command::new(&syslaunch)
+        .arg(&exe)
+        .arg("--from-syslaunch")
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+    {
+        Ok(_) => {
+            log("launch-as-system: handed off to SYSTEM via syslaunch");
+            true
+        }
+        Err(e) => {
+            log(&format!("launch-as-system: failed to spawn syslaunch: {e}"));
+            false
+        }
     }
 }
 
@@ -88,14 +165,30 @@ fn main() -> windows::core::Result<()> {
             return Ok(());
         }
 
+        let cfg = config::Config::load();
+
+        // SYSTEM hand-off (PE with Administrator auto-login): the admin logon is
+        // what makes winlogon spawn dwm.exe and composite the session, but the
+        // shell + recovery tools must run as SYSTEM. If we came up under a lesser
+        // token, re-launch via syslaunch as SYSTEM and exit. We hold the
+        // single-instance mutex here, so returning releases it and lets the
+        // SYSTEM instance take the slot — this beats the launch-vector race
+        // (Run key / loader can start an Administrator instance before the
+        // intended SYSTEM one). `--from-syslaunch` marks the re-launched instance
+        // so it never loops even if elevation didn't take. See syslaunch/.
+        if cfg.launch_as_system && !arg("--from-syslaunch") && !is_system() {
+            if relaunch_as_system() {
+                return Ok(());
+            }
+            log("launch-as-system: hand-off unavailable; running with the current token");
+        }
+
         // Always log the running version at startup so there's a baseline to
         // check against (PE has no Event Viewer); new features should add their
         // own version-stamped logging too.
         log_startup();
 
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-
-        let cfg = config::Config::load();
 
         // Put the process into dark app mode *before* any windows exist, so
         // shell menus we raise (the hosted desktop's context menu) theme dark.

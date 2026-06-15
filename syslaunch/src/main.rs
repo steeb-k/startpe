@@ -62,7 +62,22 @@ use windows::Win32::System::Threading::{
     STARTUPINFOW,
 };
 
+/// Dispatch-table service name. For a `SERVICE_WIN32_OWN_PROCESS` service the
+/// name in the dispatch table / `RegisterServiceCtrlHandlerW` is ignored, so a
+/// constant is fine even though the *installed* service name is unique per pid.
 const SVC_NAME: &str = "syslaunch_svc";
+
+/// Pull the `--job N` id out of our own command line (set in the service's
+/// binary path so the SCM-started service process can find its job file).
+fn job_id_arg() -> Option<u32> {
+    let mut it = std::env::args();
+    while let Some(a) = it.next() {
+        if a.eq_ignore_ascii_case("--job") {
+            return it.next().and_then(|s| s.parse::<u32>().ok());
+        }
+    }
+    None
+}
 
 /// Best-effort version-stamped line to `X:\startpe.log` and stdout, so the PE
 /// (which has no Event Viewer) keeps a trail of what happened.
@@ -117,12 +132,14 @@ fn quote_cmdline(parts: &[String]) -> String {
 
 /// The job file (target session + command line) handed from the installer to the
 /// service. Kept beside the exe so both the Administrator and the SYSTEM service
-/// can reach it regardless of differing %TEMP%.
-fn job_path() -> std::path::PathBuf {
+/// can reach it regardless of differing %TEMP%. Named per installer pid so
+/// concurrent invocations (e.g. several launch vectors firing at once) don't
+/// clobber each other.
+fn job_path(id: u32) -> std::path::PathBuf {
     std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("syslaunch.job")))
-        .unwrap_or_else(|| std::path::PathBuf::from("X:\\syslaunch.job"))
+        .and_then(|p| p.parent().map(|d| d.join(format!("syslaunch-{id}.job"))))
+        .unwrap_or_else(|| std::path::PathBuf::from(format!("X:\\syslaunch-{id}.job")))
 }
 
 /// Enable a privilege on our own process token. Logs whether it was actually
@@ -362,7 +379,11 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
 /// The work the service does: read the job, take our own SYSTEM token, retarget
 /// it to the requested session, and launch the program there.
 fn do_service_spawn() {
-    let Some((session, cmdline)) = read_job() else {
+    let Some(id) = job_id_arg() else {
+        log("service: no --job id on the command line");
+        return;
+    };
+    let Some((session, cmdline)) = read_job(id) else {
         log("service: job file missing/invalid");
         return;
     };
@@ -431,12 +452,12 @@ fn run_as_service() {
 // Installer side (runs as the Administrator who invoked syslaunch)
 // ===========================================================================
 
-fn write_job(session: u32, cmdline: &str) -> bool {
-    std::fs::write(job_path(), format!("{session}\n{cmdline}\n")).is_ok()
+fn write_job(id: u32, session: u32, cmdline: &str) -> bool {
+    std::fs::write(job_path(id), format!("{session}\n{cmdline}\n")).is_ok()
 }
 
-fn read_job() -> Option<(u32, String)> {
-    let text = std::fs::read_to_string(job_path()).ok()?;
+fn read_job(id: u32) -> Option<(u32, String)> {
+    let text = std::fs::read_to_string(job_path(id)).ok()?;
     let mut lines = text.lines();
     let session = lines.next()?.trim().parse::<u32>().ok()?;
     let cmd = lines.next()?.to_string();
@@ -447,7 +468,8 @@ fn read_job() -> Option<(u32, String)> {
 /// `--service-run`, start it (it spawns the program as SYSTEM on the target
 /// session), wait for it to stop, then delete it.
 fn run_via_service(session: u32, cmdline: &str) -> bool {
-    if !write_job(session, cmdline) {
+    let id = std::process::id();
+    if !write_job(id, session, cmdline) {
         log("could not write job file beside the exe");
         return false;
     }
@@ -455,8 +477,11 @@ fn run_via_service(session: u32, cmdline: &str) -> bool {
         log("current_exe() failed");
         return false;
     };
-    let bin = format!("\"{}\" --service-run", exe.display());
-    let name = wbuf(SVC_NAME);
+    // Unique service name per invocation so concurrent launch vectors can't
+    // collide on CreateService / DeleteService.
+    let svc_name = format!("syslaunch_svc_{id}");
+    let bin = format!("\"{}\" --service-run --job {id}", exe.display());
+    let name = wbuf(&svc_name);
     let bin_w = wbuf(&bin);
 
     unsafe {
@@ -517,7 +542,7 @@ fn run_via_service(session: u32, cmdline: &str) -> bool {
         let _ = DeleteService(svc);
         let _ = CloseServiceHandle(svc);
         let _ = CloseServiceHandle(scm);
-        let _ = std::fs::remove_file(job_path());
+        let _ = std::fs::remove_file(job_path(id));
         started
     }
 }
