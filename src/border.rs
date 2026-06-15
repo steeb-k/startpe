@@ -16,10 +16,12 @@
 //! `SetWinEventHook` (foreground changes, move/size via `LOCATIONCHANGE`,
 //! minimize, destroy) rather than polling.
 //!
-//! **When DWM composition is on** (e.g. a PE booted with an interactive logon so
-//! `winlogon` spawns `dwm.exe`), Windows already draws its own active-window
-//! frame, so this overlay would double up. In that case we install nothing and
-//! defer to the native frame — the whole module is a no-DWM fallback.
+//! The overlay runs **with or without DWM**. DWM's own `DWMWA_BORDER_COLOR` only
+//! tints the ~1px native frame and only on windows that *have* a frame — it can't
+//! give a borderless `WS_POPUP` (StartPE's Run/SysInfo windows, custom PE apps) a
+//! border at all, nor a 3px accent. So this overlay is what draws the accent on
+//! every foreground window. When DWM composition is on it rounds the frame to
+//! match Win11's corners; without DWM it draws square.
 //!
 //! The accent color is `taskbar::start_button_color()` (read live), so the
 //! border tracks the Start-button color and any runtime change to it.
@@ -131,17 +133,6 @@ fn ensure_installed() {
     if BORDER.with_borrow(|b| b.is_some()) {
         return;
     }
-    // With DWM composition on, Windows draws the active window's frame itself, so
-    // our GDI accent overlay would double the border. Stand down and let the
-    // native frame show — this overlay only exists to substitute for the missing
-    // DWM frame in a plain PE.
-    if unsafe { DwmIsCompositionEnabled() }
-        .map(|b| b.as_bool())
-        .unwrap_or(false)
-    {
-        log_line("window border overlay disabled (DWM composition is on)");
-        return;
-    }
     unsafe {
         let Ok(hmod) = GetModuleHandleW(None) else {
             return;
@@ -195,6 +186,11 @@ fn ensure_installed() {
         }
 
         let rounded = DwmIsCompositionEnabled().map(|b| b.as_bool()).unwrap_or(false);
+        log_line(if rounded {
+            "accent overlay installed (DWM on: rounded frame over the native border)"
+        } else {
+            "accent overlay installed (no DWM: square frame)"
+        });
         let taskbar = FindWindowW(w!("StartPE_Taskbar"), PCWSTR_NULL).unwrap_or_default();
         BORDER.with_borrow_mut(|b| {
             *b = Some(Border {
