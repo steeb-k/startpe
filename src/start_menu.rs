@@ -705,7 +705,7 @@ fn paint(m: &MenuState) {
             right: m.width,
             bottom: m.height,
         };
-        crate::taskbar::accent_ring(mem, &ring, scaled(RADIUS) * 2);
+        crate::taskbar::accent_ring(mem, m.hwnd, &ring, scaled(RADIUS) * 2);
 
         // Hide the caret across the blit so it isn't corrupted, then restore it.
         let _ = HideCaret(m.hwnd);

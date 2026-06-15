@@ -1237,14 +1237,24 @@ fn fill_rounded(hdc: HDC, rect: &RECT, color: u32, radius: i32) {
     }
 }
 
-/// Stroke a 1px accent-colored rounded outline along `rect` (pass the same corner
-/// `ellipse` size the window's region used). Gives StartPE's borderless popups a
-/// thin accent edge against the desktop. Uses the live Start-button accent color,
-/// and a null brush so only the outline is drawn. Call it last, into the same DC
-/// the window blits to the screen.
-pub fn accent_ring(hdc: HDC, rect: &RECT, ellipse: i32) {
+/// Border gray for an unfocused StartPE window (matches `dwm_border`'s inactive
+/// color so app windows and StartPE windows dim consistently).
+const RING_GRAY: u32 = 0x0055_5555;
+
+/// Stroke a 1px rounded outline along `rect` (pass the same corner `ellipse` size
+/// the window's region used). Gives StartPE's borderless popups a thin edge
+/// against the desktop: the live Start-button accent when `hwnd` is the
+/// foreground window, gray otherwise. A null brush draws only the outline. Call
+/// it last, into the same DC the window blits to the screen; the window must
+/// repaint on `WM_ACTIVATE` for the focus change to show.
+pub fn accent_ring(hdc: HDC, hwnd: HWND, rect: &RECT, ellipse: i32) {
     unsafe {
-        let pen = CreatePen(PS_SOLID, 1, COLORREF(start_button_color()));
+        let color = if GetForegroundWindow() == hwnd {
+            start_button_color()
+        } else {
+            RING_GRAY
+        };
+        let pen = CreatePen(PS_SOLID, 1, COLORREF(color));
         let old_pen = SelectObject(hdc, pen);
         let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
         let _ = RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, ellipse, ellipse);

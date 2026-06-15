@@ -175,3 +175,31 @@ pub fn save_u32(name: &str, value: u32) {
         let _ = key.set_value(name, &value);
     }
 }
+
+/// Registry value holding the Run-command history (newline-joined, oldest first).
+const RUN_HISTORY: &str = "RunHistory";
+
+/// Load the Run history from `HKCU\Software\StartPE` (where the SYSTEM-token Run
+/// process can both read and write it). PE wipes the registry on reboot, so this
+/// is session recall — which is the point, since the Run window is a separate
+/// short-lived process each launch and can't keep history in memory.
+pub fn load_run_history() -> Vec<String> {
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(KEY)
+        .ok()
+        .and_then(|k| k.get_value::<String, _>(RUN_HISTORY).ok())
+        .map(|s| {
+            s.split('\n')
+                .filter(|e| !e.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Persist the Run history (oldest first) to `HKCU\Software\StartPE`.
+pub fn save_run_history(items: &[String]) {
+    if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(KEY) {
+        let _ = key.set_value(RUN_HISTORY, &items.join("\n"));
+    }
+}

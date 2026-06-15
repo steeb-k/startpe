@@ -763,9 +763,9 @@ fn paint(a: &AltTab) {
         }
 
         SelectObject(mem, old_font);
-        // 1px accent ring (borderless window, matches the region's scaled(16) corners).
+        // 1px ring (borderless window: accent when focused, gray otherwise).
         let ring = RECT { left: 0, top: 0, right: a.width, bottom: a.height };
-        crate::taskbar::accent_ring(mem, &ring, scaled(16));
+        crate::taskbar::accent_ring(mem, a.hwnd, &ring, scaled(16));
         let _ = BitBlt(hdc, 0, 0, a.width, a.height, mem, 0, 0, SRCCOPY);
         SelectObject(mem, old_bmp);
         let _ = DeleteObject(HGDIOBJ(bmp.0));

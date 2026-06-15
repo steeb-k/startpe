@@ -391,6 +391,11 @@ fn hit(x: i32, y: i32) -> i32 {
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_ERASEBKGND => LRESULT(1), // painted in WM_PAINT (double-buffered)
+        WM_ACTIVATE => {
+            // Repaint so the accent ring switches accent <-> gray with focus.
+            let _ = InvalidateRect(hwnd, None, false);
+            LRESULT(0)
+        }
         WM_PAINT => {
             STATE.with_borrow(|s| {
                 if let Some(s) = s.as_ref() {
@@ -1075,9 +1080,9 @@ fn paint(state: &State) {
             }
         }
 
-        // 1px accent ring (borderless window, matches the region's scaled(16) corners).
+        // 1px ring (borderless window: accent when focused, gray otherwise).
         let ring = RECT { left: 0, top: 0, right: width, bottom: height };
-        crate::taskbar::accent_ring(mem, &ring, scaled(16));
+        crate::taskbar::accent_ring(mem, hwnd, &ring, scaled(16));
         let _ = BitBlt(hdc, 0, 0, width, height, mem, 0, 0, SRCCOPY);
         SelectObject(mem, old_bmp);
         let _ = DeleteObject(HGDIOBJ(bmp.0));
