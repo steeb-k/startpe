@@ -63,6 +63,12 @@ pub struct Config {
     /// session but the tools must still run as SYSTEM. Default off (so a normal
     /// run never tries to elevate). See `main.rs` and `syslaunch/`.
     pub launch_as_system: bool,
+    /// File-browser command for "This PC" / Win+E. Empty/unset = Explorer's
+    /// This-PC view (the normal path). In the DWM/Administrator-session PE,
+    /// Explorer can't run as SYSTEM, so a portable file manager (e.g. Eden
+    /// Explorer, set by its component) is used instead — launched with whatever
+    /// token StartPE runs as (SYSTEM there). See `taskbar::open_file_manager`.
+    pub file_manager: Option<String>,
 }
 
 impl Default for Config {
@@ -84,6 +90,7 @@ impl Default for Config {
             dark_menus: true,
             window_borders: true,
             launch_as_system: false,
+            file_manager: None,
         }
     }
 }
@@ -154,6 +161,11 @@ impl Config {
         }
         if let Ok(v) = key.get_value::<u32, _>("LaunchAsSystem") {
             self.launch_as_system = v != 0;
+        }
+        if let Ok(v) = key.get_value::<String, _>("FileManager") {
+            if !v.is_empty() {
+                self.file_manager = Some(v);
+            }
         }
     }
 }

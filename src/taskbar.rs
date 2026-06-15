@@ -414,6 +414,19 @@ fn win_hotkey(vk: u32) -> Option<u32> {
     }
 }
 
+/// Open the file browser for "This PC" / Win+E: the configured `FileManager`
+/// when set (launched with whatever token StartPE runs as — SYSTEM in the
+/// DWM/Administrator PE, where Explorer can't run as SYSTEM), otherwise Explorer's
+/// This-PC view. The FileManager is a portable manager (e.g. Eden Explorer) set
+/// by its component; it takes no path argument, so this just opens it.
+pub fn open_file_manager() {
+    let fm = STATE.with_borrow(|s| s.as_ref().and_then(|s| s.cfg.file_manager.clone()));
+    match fm {
+        Some(p) if !p.trim().is_empty() => run(&p, ""),
+        _ => run("explorer.exe", "shell:MyComputerFolder"),
+    }
+}
+
 /// Run a command via the shell (same path the start menu uses).
 fn run(cmd: &str, args: &str) {
     unsafe {
@@ -1042,7 +1055,7 @@ fn show_winx_menu(hwnd: HWND, select_first: bool) {
             run_admin(&term, "");
         }
         16 => run("taskmgr.exe", ""),
-        17 => run("explorer.exe", "shell:MyComputerFolder"),
+        17 => open_file_manager(),
         18 => crate::run_window::launch(),
         20 => run("wpeutil.exe", "reboot"),
         21 => run("wpeutil.exe", "shutdown"),
@@ -1712,7 +1725,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         MSG_HOTKEY => {
             match wparam.0 as u32 {
                 HOTKEY_RUN => crate::run_window::launch(),
-                HOTKEY_EXPLORER => run("explorer.exe", "shell:MyComputerFolder"),
+                HOTKEY_EXPLORER => open_file_manager(),
                 HOTKEY_DESKTOP => toggle_show_desktop(),
                 HOTKEY_WINX => show_winx_menu(hwnd, true),
                 HOTKEY_SYSINFO => crate::sysinfo::launch(),

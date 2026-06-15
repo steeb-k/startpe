@@ -17,8 +17,8 @@ Author=steeb-k
 Level=3
 Selected=True
 Mandatory=False
-Version=0.1.68.0
-Date=2026-06-14
+Version=0.1.69.0
+Date=2026-06-15
 
 [Variables]
 %ProgramFolder%=StartPE

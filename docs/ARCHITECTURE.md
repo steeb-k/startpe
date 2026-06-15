@@ -201,6 +201,7 @@ Current values (all `REG_DWORD`):
 | `DarkMenus` | 1 | 1 = dark-mode the shell menus created in our process (chiefly the hosted desktop's right-click context menu) via uxtheme dark app mode; 0 = leave them light (see `darkmode.rs`) |
 | `WindowBorders` | 1 | 1 = accent the active window's frame in the `StartButtonColor`; 0 = off. With DWM on, recolors the real 1px border via `DWMWA_BORDER_COLOR` (accent focused, gray unfocused — `dwm_border.rs`); without DWM, a GDI ring overlay (`border.rs`). StartPE's own borderless windows always draw a 1px accent ring (`taskbar::accent_ring`) |
 | `LaunchAsSystem` | 0 | 1 = if StartPE starts under a lesser token, re-launch itself as SYSTEM via `syslaunch.exe` and exit (so it ends up SYSTEM no matter which vector started it). The PE build sets 1 for the Administrator-auto-login + DWM mode; default 0 so a normal run never elevates (see `main.rs`, `syslaunch/`) |
+| `FileManager` | _(unset)_ | File-browser command for This PC / Win+E. Unset = Explorer's This-PC view. In the DWM/Administrator-session PE, Explorer can't run as SYSTEM, so a portable manager (e.g. Eden Explorer) is set here by its component and launched with StartPE's token (SYSTEM). Not written by `StartPE.script` — set by the file-manager component so it isn't clobbered (see `taskbar::open_file_manager`) |
 
 Launch: the PEBakery script writes the Run key for classic logon flows and
 calls `AddAutoRun,PostShell` so winrx-creator/PhoenixPE images start StartPE
