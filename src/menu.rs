@@ -695,6 +695,25 @@ unsafe fn paint(panel: &Panel) {
         }
     }
 
+    // 1px accent ring around the panel, matching the Start menu's purple trim.
+    // The menu never takes focus (WS_EX_NOACTIVATE), so we draw the live accent
+    // color directly rather than the focus-aware ring. Same corner radius as the
+    // window region so the stroke hugs the rounded edge.
+    let ring = RECT {
+        left: 0,
+        top: 0,
+        right: panel.width,
+        bottom: panel.height,
+    };
+    let pen = CreatePen(PS_SOLID, 1, COLORREF(crate::taskbar::start_button_color()));
+    let old_pen = SelectObject(mem, HGDIOBJ(pen.0));
+    let old_brush = SelectObject(mem, GetStockObject(NULL_BRUSH));
+    let rad = scaled(RADIUS);
+    let _ = RoundRect(mem, ring.left, ring.top, ring.right, ring.bottom, rad, rad);
+    SelectObject(mem, old_pen);
+    SelectObject(mem, old_brush);
+    let _ = DeleteObject(HGDIOBJ(pen.0));
+
     let _ = BitBlt(hdc, 0, 0, panel.width, panel.height, mem, 0, 0, SRCCOPY);
     SelectObject(mem, oldfont);
     SelectObject(mem, oldbmp);

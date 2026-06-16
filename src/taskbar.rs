@@ -187,8 +187,8 @@ fn log_features(cfg: &Config) {
         let _ = writeln!(
             f,
             "StartPE v{} taskbar: rounded buttons, show-desktop button, \
-             Win+X power menu, locale clock, StartButtonColor=0x{:06X}, \
-             WindowBorders={}",
+             Win+X power menu (accent trim + taskbar gap), locale clock, \
+             StartButtonColor=0x{:06X}, WindowBorders={}",
             env!("CARGO_PKG_VERSION"),
             cfg.start_button_color,
             cfg.window_borders as u32
@@ -1019,7 +1019,9 @@ fn show_winx_menu(hwnd: HWND, select_first: bool) {
             GetWindowRect(s.hwnd, &mut wr).ok()?;
         }
         let r = start_rect_at(s.start_x, scaled(s.cfg.taskbar_height));
-        Some((wr.left + r.left, wr.top))
+        // Lift the anchor off the taskbar by the same gap the start menu uses, so
+        // the bottom-aligned menu floats above the bar instead of pressing into it.
+        Some((wr.left + r.left, wr.top - scaled(8)))
     });
     let Some((x, y)) = anchor else { return };
 
