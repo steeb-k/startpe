@@ -11,6 +11,7 @@
 //! immediately showing a spinner, then repaints when the data arrives.
 
 mod sysinfo_data;
+mod winfix;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -140,7 +141,7 @@ fn build_ui(app: &adw::Application) {
         });
     }
 
-    adw::ApplicationWindow::builder()
+    let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("System Information")
         .default_width(760)
@@ -148,8 +149,11 @@ fn build_ui(app: &adw::Application) {
         .width_request(360)
         .height_request(400)
         .content(&split)
-        .build()
-        .present();
+        .build();
+    // Clamp the maximized size to the area above StartPE's taskbar (which doesn't
+    // reserve work area), so maximizing doesn't run behind the bar.
+    winfix::constrain_maximize(&window);
+    window.present();
 }
 
 /// Clear and rebuild the content pane for `section`. With `info == None`
