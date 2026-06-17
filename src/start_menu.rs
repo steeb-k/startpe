@@ -300,8 +300,53 @@ fn build_right_items() -> Vec<RightItem> {
 // ---------------------------------------------------------------------------
 // Show / hide
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// PID of the pre-warmed GTK start-menu helper (`StartMenu.exe`), 0 if none.
+static HELPER_PID: AtomicU32 = AtomicU32::new(0);
+
+/// Launch the GTK start-menu helper pre-warmed (hidden) if a sibling
+/// `StartMenu.exe` (or a `StartMenuApp` override) is present. Called once at
+/// startup; `toggle()` then drives it via the registered `StartPE_ToggleStartMenu`
+/// message, falling back to this built-in GDI menu if it isn't running.
+pub fn launch_helper() {
+    let app = crate::config::start_menu_app().or_else(|| {
+        std::env::current_exe()
+            .ok()
+            .map(|e| e.with_file_name("StartMenu.exe"))
+            .filter(|p| p.is_file())
+            .map(|p| p.to_string_lossy().into_owned())
+    });
+    if let Some(app) = app {
+        if let Ok(child) = std::process::Command::new(app).spawn() {
+            HELPER_PID.store(child.id(), Ordering::Relaxed);
+        }
+    }
+}
+
+/// The helper's hidden IPC window, if the pre-warmed helper is running.
+unsafe fn helper_ipc() -> Option<HWND> {
+    let h = FindWindowW(w!("StartPE_StartMenuIPC"), PCWSTR::null()).ok()?;
+    (!h.is_invalid()).then_some(h)
+}
+
 pub fn toggle() {
     unsafe {
+        // Prefer the pre-warmed GTK helper if it's running: grant it foreground
+        // and post the toggle. If FindWindow fails (helper absent or crashed),
+        // fall through to the built-in GDI menu below.
+        if let Some(ipc) = helper_ipc() {
+            let pid = HELPER_PID.load(Ordering::Relaxed);
+            if pid != 0 {
+                let _ = AllowSetForegroundWindow(pid);
+            }
+            let msg = RegisterWindowMessageW(w!("StartPE_ToggleStartMenu"));
+            if msg != 0 {
+                let _ = PostMessageW(ipc, msg, WPARAM(0), LPARAM(0));
+                return;
+            }
+        }
+
         let info = MENU.with_borrow(|m| m.as_ref().map(|m| (m.hwnd, m.taskbar, m.width, m.height)));
         let Some((hwnd, taskbar, width, height)) = info else { return };
         if IsWindowVisible(hwnd).as_bool() {

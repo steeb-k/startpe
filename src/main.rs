@@ -208,6 +208,10 @@ fn main() -> windows::core::Result<()> {
         taskbar::hide_explorer_taskbar();
         let taskbar = taskbar::Taskbar::create(&cfg)?;
         start_menu::create(&cfg, taskbar.hwnd)?;
+        // Pre-warm the GTK start-menu helper (if a sibling StartMenu.exe is
+        // present); `start_menu::toggle()` then drives it, with the GDI menu above
+        // as the fallback.
+        start_menu::launch_helper();
         tray::create(taskbar.hwnd)?;
         taskbar::install_win_key_hook();
         alttab::install();

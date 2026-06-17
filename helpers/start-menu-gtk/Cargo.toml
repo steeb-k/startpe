@@ -12,13 +12,18 @@ path = "src/main.rs"
 [dependencies]
 gtk = { package = "gtk4", version = "0.9", features = ["v4_10"] }
 adw = { package = "libadwaita", version = "0.7", features = ["v1_4"] }
+async-channel = "2"
+winreg = "0.55"
 
 [dependencies.windows]
 version = "0.58"
 features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_Security",
     "Win32_Storage_FileSystem",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ]
