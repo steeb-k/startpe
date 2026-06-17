@@ -93,6 +93,15 @@ cargo build --release --workspace                       # x64
 cargo build --release --workspace --target aarch64-pc-windows-msvc  # ARM64
 ```
 
+`helpers/` holds the GTK4/Libadwaita shell helpers (e.g. `helpers/sysinfo-gtk`,
+which builds `SystemInfo.exe`). They are **excluded from the MSVC workspace** and
+build with the **MSYS2 ucrt64** toolchain + the shipped GTK runtime, not with the
+commands above — build them separately (`cd helpers/sysinfo-gtk && cargo build
+--release` in a ucrt64 shell; CI has its own `sysinfo-gtk` job). They ship as
+extra assets in the same release; `startpe.exe` auto-detects them as siblings and
+the built-in GDI windows remain the fallback (so the main binary never depends on
+the GTK runtime). Keep `startpe.exe` itself free of any GTK/runtime dependency.
+
 Builds must stay warning-free. There are no unit tests; verification is
 manual. **Warning when testing on a real desktop:** `startpe.exe` hides the
 actual Explorer taskbar and grabs the Win key while running. It restores both
