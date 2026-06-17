@@ -85,6 +85,8 @@ jobs:
             asset: RunBox.exe
           - dir: helpers/settings-gtk
             asset: Settings.exe
+          - dir: helpers/start-menu-gtk
+            asset: StartMenu.exe
     defaults:
       run:
         shell: msys2 {0}

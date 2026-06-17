@@ -25,7 +25,11 @@ use appsource::{AppItem, ItemKind};
 const APP_ID: &str = "org.winrx.PeStartMenu";
 
 const CSS: &str = "
-.sm-right { background-color: @sidebar_bg_color; }
+.sm-right {
+  background-color: @sidebar_bg_color;
+  border-top-right-radius: 12px;
+  border-bottom-right-radius: 12px;
+}
 .sm-list { background: transparent; }
 .sm-list row { border-radius: 8px; }
 .sm-rightbtn { padding: 8px 10px; }
