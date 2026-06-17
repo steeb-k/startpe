@@ -94,8 +94,8 @@ cargo build --release --workspace --target aarch64-pc-windows-msvc  # ARM64
 ```
 
 `helpers/` holds the GTK4/Libadwaita shell helpers (`helpers/sysinfo-gtk` →
-`SystemInfo.exe`, `helpers/run-gtk` → `RunBox.exe`). They are **excluded from the
-MSVC workspace** and
+`SystemInfo.exe`, `helpers/run-gtk` → `RunBox.exe`, `helpers/settings-gtk` →
+`Settings.exe`). They are **excluded from the MSVC workspace** and
 build with the **MSYS2 ucrt64** toolchain + the shipped GTK runtime, not with the
 commands above — build them separately (`cd helpers/sysinfo-gtk && cargo build
 --release` in a ucrt64 shell; CI has its own `sysinfo-gtk` job). They ship as

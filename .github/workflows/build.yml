@@ -83,6 +83,8 @@ jobs:
             asset: SystemInfo.exe
           - dir: helpers/run-gtk
             asset: RunBox.exe
+          - dir: helpers/settings-gtk
+            asset: Settings.exe
     defaults:
       run:
         shell: msys2 {0}

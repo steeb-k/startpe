@@ -168,8 +168,17 @@ const CUSTOM_H: i32 = 28; // Custom… button height
 const GLYPH_CHECK: u16 = 0xE73E; // CheckMark
 const GLYPH_CLOSE: u16 = 0xE8BB; // ChromeClose
 
-/// Open the settings window (or bring it to the front if already open).
+/// Open the settings window. Prefers the external GTK app configured in
+/// `SettingsApp` or a sibling `Settings.exe` next to `startpe.exe`; otherwise
+/// opens the built-in in-process pane. The GTK helper writes the same
+/// `HKCU\Software\StartPE` values and posts `StartPE_ReloadConfig` so changes
+/// apply live, exactly like the in-process pane's `reload_config` call.
 pub fn open() {
+    if let Some(app) = gtk_helper() {
+        if spawn_external(&app) {
+            return;
+        }
+    }
     unsafe {
         // Single instance: re-focus the existing window instead of stacking.
         let existing = STATE.with_borrow(|s| s.as_ref().map(|s| s.hwnd));
@@ -260,6 +269,49 @@ pub fn open() {
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
         log_open();
+    }
+}
+
+/// The GTK Settings helper to launch, if any. An explicit `SettingsApp` override
+/// wins if set; otherwise a sibling `Settings.exe` shipped next to `startpe.exe`
+/// (the default — both come from the same release). `None` => the in-process pane.
+fn gtk_helper() -> Option<String> {
+    if let Some(app) = config::settings_app() {
+        return Some(app);
+    }
+    let sibling = std::env::current_exe().ok()?.with_file_name("Settings.exe");
+    sibling
+        .is_file()
+        .then(|| sibling.to_string_lossy().into_owned())
+}
+
+/// Spawn the GTK `Settings.exe` helper. Returns false if it couldn't be started,
+/// so the caller falls back to the in-process pane.
+fn spawn_external(app: &str) -> bool {
+    match std::process::Command::new(app).spawn() {
+        Ok(child) => {
+            unsafe {
+                let _ = AllowSetForegroundWindow(child.id());
+            }
+            log_redirect(app);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+fn log_redirect(app: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("X:\\startpe.log")
+    {
+        let _ = writeln!(
+            f,
+            "StartPE v{} Settings -> external app: {app}",
+            env!("CARGO_PKG_VERSION")
+        );
     }
 }
 

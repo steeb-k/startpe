@@ -17,7 +17,7 @@ Author=steeb-k
 Level=3
 Selected=True
 Mandatory=False
-Version=0.1.75.0
+Version=0.1.76.0
 Date=2026-06-15
 
 [Variables]
@@ -36,6 +36,8 @@ Date=2026-06-15
 %SysInfoX64%=SystemInfo.exe
 // Optional GTK4/Libadwaita Run helper (x64 only). Same sibling auto-detect.
 %RunBoxX64%=RunBox.exe
+// Optional GTK4/Libadwaita Settings helper (x64 only). Same sibling auto-detect.
+%SettingsX64%=Settings.exe
 // COM CLSID used to get the loader pulled into Explorer at shell startup.
 %LoaderCLSID%={6F3D9B2A-1C4E-4E7A-9B58-2E1D7C0A5F31}
 // Base URL for release builds; the arch-specific binary name is appended.
@@ -58,6 +60,7 @@ If,%SourceArch%,Equal,x64,Begin
   Set,%SysLaunchName%,%SysLaunchX64%
   Set,%SysInfoName%,%SysInfoX64%
   Set,%RunBoxName%,%RunBoxX64%
+  Set,%SettingsName%,%SettingsX64%
 End
 Else,If,%SourceArch%,Equal,ARM64,Begin
   Set,%BinaryName%,%BinaryA64%
@@ -65,6 +68,7 @@ Else,If,%SourceArch%,Equal,ARM64,Begin
   Set,%SysLaunchName%,%SysLaunchA64%
   Set,%SysInfoName%,""
   Set,%RunBoxName%,""
+  Set,%SettingsName%,""
 End
 Else,Halt,"StartPE ERROR: Unsupported processor architecture [%SourceArch%]."
 
@@ -86,6 +90,12 @@ End
 If,Not,%RunBoxName%,Equal,"",Begin
   If,Not,ExistFile,"%ProgramsCache%\%ProgramFolder%\%RunBoxName%",WebGet,"%DownloadURL%%RunBoxName%","%ProgramsCache%\%ProgramFolder%\%RunBoxName%",NOERR
   If,ExistFile,"%ProgramsCache%\%ProgramFolder%\%RunBoxName%",FileCopy,"%ProgramsCache%\%ProgramFolder%\%RunBoxName%","%TargetPrograms%\%ProgramFolder%\%RunBoxName%"
+End
+
+// Optional GTK Settings helper: download if missing, copy when present. Non-fatal.
+If,Not,%SettingsName%,Equal,"",Begin
+  If,Not,ExistFile,"%ProgramsCache%\%ProgramFolder%\%SettingsName%",WebGet,"%DownloadURL%%SettingsName%","%ProgramsCache%\%ProgramFolder%\%SettingsName%",NOERR
+  If,ExistFile,"%ProgramsCache%\%ProgramFolder%\%SettingsName%",FileCopy,"%ProgramsCache%\%ProgramFolder%\%SettingsName%","%TargetPrograms%\%ProgramFolder%\%SettingsName%"
 End
 
 Run,%ScriptFile%,Config
