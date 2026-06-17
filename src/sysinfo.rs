@@ -154,14 +154,17 @@ thread_local! {
 /// until it closes, then return (the process exits). Used by the PE image's
 /// sysdm.cpl / "This PC → Properties" redirection.
 pub fn run_standalone() {
-    unsafe {
-        // Single instance: focus an existing System Information window (from this
-        // or another --sysinfo process) instead of opening a second one.
-        if let Ok(existing) = FindWindowW(w!("StartPE_SysInfo"), PCWSTR::null()) {
-            if !existing.is_invalid() {
-                let _ = SetForegroundWindow(existing);
-                return;
-            }
+    // Single instance: focus an existing System Information window (built-in or
+    // the GTK helper — both titled "System Information") instead of opening a
+    // second one.
+    if unsafe { focus_existing() } {
+        return;
+    }
+    // This is also where "This PC → Properties" / sysdm.cpl lands, so honor the
+    // external-app redirect here too: prefer the configured GTK `SystemInfo.exe`.
+    if let Some(app) = crate::config::sysinfo_app() {
+        if spawn_external(&app) {
+            return;
         }
     }
     STANDALONE.with(|f| f.set(true));
@@ -175,10 +178,22 @@ pub fn run_standalone() {
     }
 }
 
-/// Launch System Information as a separate `startpe.exe --sysinfo` process, so
-/// the shell treats it as an ordinary app (taskbar/Alt+Tab, normal Z order,
-/// accent border). Called from the taskbar process (Win+X → System, Win+Pause).
+/// Launch System Information. Prefers the external GTK app configured in
+/// `SysInfoApp` (the libadwaita `SystemInfo.exe` helper); otherwise opens our
+/// built-in window as a separate `startpe.exe --sysinfo` process. Either way the
+/// shell treats it as an ordinary app (taskbar/Alt+Tab, normal Z order, accent
+/// border). Called from the taskbar process (Win+X → System, Win+Pause).
 pub fn launch() {
+    // Repeated presses focus the open window rather than stacking new ones; the
+    // built-in window and the GTK helper share the title "System Information".
+    if unsafe { focus_existing() } {
+        return;
+    }
+    if let Some(app) = crate::config::sysinfo_app() {
+        if spawn_external(&app) {
+            return;
+        }
+    }
     if let Ok(exe) = std::env::current_exe() {
         if let Ok(child) = std::process::Command::new(exe).arg("--sysinfo").spawn() {
             // Let the new process come to the foreground (it isn't yet, so its
@@ -187,6 +202,50 @@ pub fn launch() {
                 let _ = AllowSetForegroundWindow(child.id());
             }
         }
+    }
+}
+
+/// Focus an already-open System Information window (built-in or the GTK helper —
+/// both use the window title "System Information"). Returns true if one was found.
+unsafe fn focus_existing() -> bool {
+    if let Ok(h) = FindWindowW(PCWSTR::null(), w!("System Information")) {
+        if !h.is_invalid() {
+            let _ = SetForegroundWindow(h);
+            return true;
+        }
+    }
+    false
+}
+
+/// Spawn the configured external System Information app (the GTK `SystemInfo.exe`
+/// helper). Returns false if it couldn't be started, so the caller falls back to
+/// the built-in window. The child inherits StartPE's token (SYSTEM in the PE) and
+/// environment (where the GTK4 runtime is on `PATH`).
+fn spawn_external(app: &str) -> bool {
+    match std::process::Command::new(app).spawn() {
+        Ok(child) => {
+            unsafe {
+                let _ = AllowSetForegroundWindow(child.id());
+            }
+            log_redirect(app);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+fn log_redirect(app: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("X:\\startpe.log")
+    {
+        let _ = writeln!(
+            f,
+            "StartPE v{} System Information -> external app: {app}",
+            env!("CARGO_PKG_VERSION")
+        );
     }
 }
 

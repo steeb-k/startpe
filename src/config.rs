@@ -170,6 +170,26 @@ impl Config {
     }
 }
 
+/// Path to an external System Information app — the GTK4/Libadwaita
+/// `SystemInfo.exe` helper — if one is configured under `SysInfoApp`. Read HKLM
+/// then HKCU (so a component-set machine value applies in PE and an HKCU override
+/// still wins). Empty/unset returns `None`, in which case StartPE uses its
+/// built-in System Information window. Like `FileManager`, this is set by the
+/// helper's PE component, not by `StartPE.script`. See `sysinfo::launch`.
+pub fn sysinfo_app() -> Option<String> {
+    let mut app = None;
+    for hive in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
+        if let Ok(key) = RegKey::predef(hive).open_subkey(KEY) {
+            if let Ok(v) = key.get_value::<String, _>("SysInfoApp") {
+                if !v.trim().is_empty() {
+                    app = Some(v);
+                }
+            }
+        }
+    }
+    app
+}
+
 /// Persist a single boolean setting (as a `REG_DWORD` 0/1).
 pub fn save_bool(name: &str, value: bool) {
     save_u32(name, value as u32);

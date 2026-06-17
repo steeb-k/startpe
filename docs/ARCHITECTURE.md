@@ -125,7 +125,11 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   **Win+Pause** (the Win-key hook) `spawn` it with `AllowSetForegroundWindow`, and
   the PE image wires **right-click This PC → Properties** / sysdm.cpl to the same
   `--sysinfo` via a Properties-verb override on the My Computer CLSID in
-  `StartPE.script`. `FindWindowW` enforces single instance
+  `StartPE.script`. `FindWindowW` (by the shared window title) enforces single
+  instance. If `SysInfoApp` is set, every entry point instead launches that
+  external app — the GTK4/Libadwaita `SystemInfo.exe` helper, which shares the
+  look of the PE's other libadwaita apps — falling back to the built-in window if
+  it can't be started (the first GTK shell-helper pilot; see `config::sysinfo_app`)
 - `src/darkmode.rs` — opt-out (`DarkMenus`, default on) dark mode for the
   *shell-rendered* menus our process raises (the hosted desktop context menu),
   via the undocumented uxtheme dark-mode ordinals. The one sanctioned
@@ -202,6 +206,7 @@ Current values (all `REG_DWORD`):
 | `WindowBorders` | 1 | 1 = accent the active window's frame in the `StartButtonColor`; 0 = off. With DWM on, recolors the real 1px border via `DWMWA_BORDER_COLOR` (accent focused, gray unfocused — `dwm_border.rs`); without DWM, a GDI ring overlay (`border.rs`). StartPE's own borderless windows always draw a 1px accent ring (`taskbar::accent_ring`) |
 | `LaunchAsSystem` | 0 | 1 = if StartPE starts under a lesser token, re-launch itself as SYSTEM via `syslaunch.exe` and exit (so it ends up SYSTEM no matter which vector started it). The PE build sets 1 for the Administrator-auto-login + DWM mode; default 0 so a normal run never elevates (see `main.rs`, `syslaunch/`) |
 | `FileManager` | _(unset)_ | File-browser command for This PC / Win+E. Unset = Explorer's This-PC view. In the DWM/Administrator-session PE, Explorer can't run as SYSTEM, so a portable manager (e.g. Eden Explorer) is set here by its component and launched with StartPE's token (SYSTEM). Not written by `StartPE.script` — set by the file-manager component so it isn't clobbered (see `taskbar::open_file_manager`) |
+| `SysInfoApp` | _(unset)_ | Path to an external System Information app — the GTK4/Libadwaita `SystemInfo.exe` helper. Unset = StartPE's built-in window. When set, Win+X → System, Win+Pause and This PC → Properties all launch this exe (inheriting StartPE's token/PATH, so SYSTEM + the GTK4 runtime in PE), falling back to the built-in window if it can't start. Like `FileManager`, set by the helper's PE component, not by `StartPE.script` (see `config::sysinfo_app`, `sysinfo::launch`) |
 
 Launch: the PEBakery script writes the Run key for classic logon flows and
 calls `AddAutoRun,PostShell` so winrx-creator/PhoenixPE images start StartPE
