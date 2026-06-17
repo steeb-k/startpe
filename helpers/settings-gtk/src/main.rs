@@ -30,6 +30,15 @@ struct Toggle {
     restart: bool,
 }
 
+/// View-switcher sections (label, symbolic icon), in display order. Each becomes
+/// its own `AdwPreferencesPage`; the boolean toggles are filtered into them by
+/// matching `Toggle::group`.
+const SECTIONS: &[(&str, &str)] = &[
+    ("Taskbar", "view-list-symbolic"),
+    ("Windows", "video-display-symbolic"),
+    ("Menus", "open-menu-symbolic"),
+];
+
 const TOGGLES: &[Toggle] = &[
     Toggle { group: "Taskbar", label: "Show window labels", reg: "TaskbarLabels", get: |s| s.show_labels, restart: false },
     Toggle { group: "Taskbar", label: "Combine taskbar buttons", reg: "TaskbarCombine", get: |s| s.combine, restart: false },
@@ -42,34 +51,31 @@ fn build_ui(app: &adw::Application) {
     adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
 
     let settings = settings_io::load();
-    let page = adw::PreferencesPage::new();
 
-    // Toggle groups, in first-seen group order.
-    let mut current_group: Option<(&str, adw::PreferencesGroup)> = None;
-    for t in TOGGLES {
-        let group = match &current_group {
-            Some((g, grp)) if *g == t.group => grp.clone(),
-            _ => {
-                let grp = adw::PreferencesGroup::builder().title(t.group).build();
-                page.add(&grp);
-                current_group = Some((t.group, grp.clone()));
-                grp
+    // A view per section, switched by an AdwViewSwitcher in the header (the
+    // Adwaita-demo pattern) instead of one long scrolling page.
+    let stack = adw::ViewStack::new();
+
+    for (section, icon) in SECTIONS {
+        let group = adw::PreferencesGroup::new();
+        for t in TOGGLES.iter().filter(|t| t.group == *section) {
+            let row = adw::SwitchRow::builder()
+                .title(t.label)
+                .active((t.get)(&settings))
+                .build();
+            if t.restart {
+                row.set_subtitle("Applies after StartPE restarts");
             }
-        };
-        let row = adw::SwitchRow::builder()
-            .title(t.label)
-            .active((t.get)(&settings))
-            .build();
-        if t.restart {
-            row.set_subtitle("Applies after StartPE restarts");
+            let reg = t.reg;
+            row.connect_active_notify(move |r| settings_io::save_bool(reg, r.is_active()));
+            group.add(&row);
         }
-        let reg = t.reg;
-        row.connect_active_notify(move |r| settings_io::save_bool(reg, r.is_active()));
-        group.add(&row);
+        let page = stack.add_titled(&section_clamp(&group), Some(section), section);
+        page.set_icon_name(Some(icon));
     }
 
-    // Start-button glyph color.
-    let color_group = adw::PreferencesGroup::builder().title("Start button").build();
+    // Start-button glyph color, its own view.
+    let start_group = adw::PreferencesGroup::new();
     let dialog = gtk::ColorDialog::builder().with_alpha(false).build();
     let color_button = gtk::ColorDialogButton::new(Some(dialog));
     color_button.set_rgba(&colorref_to_rgba(settings.start_color));
@@ -80,18 +86,30 @@ fn build_ui(app: &adw::Application) {
     let color_row = adw::ActionRow::builder().title("Glyph color").build();
     color_row.add_suffix(&color_button);
     color_row.set_activatable_widget(Some(&color_button));
-    color_group.add(&color_row);
-    page.add(&color_group);
+    start_group.add(&color_row);
+    let start = stack.add_titled(&section_clamp(&start_group), Some("start"), "Start button");
+    start.set_icon_name(Some("start-here-symbolic"));
 
-    let window = adw::PreferencesWindow::builder()
+    // Header bar carrying the view switcher; content is the stack.
+    let switcher = adw::ViewSwitcher::builder()
+        .stack(&stack)
+        .policy(adw::ViewSwitcherPolicy::Wide)
+        .build();
+    let header = adw::HeaderBar::new();
+    header.set_decoration_layout(Some(":close")); // drop minimize/maximize
+    header.set_title_widget(Some(&switcher));
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&stack));
+
+    let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("StartPE Settings")
-        .search_enabled(false)
         .resizable(false) // fixed dialog; avoids maximizing behind StartPE's taskbar
-        .default_width(420)
-        .default_height(520)
+        .default_width(600)
+        .default_height(300)
+        .content(&toolbar)
         .build();
-    window.add(&page);
 
     // Escape closes the window.
     let keys = EventControllerKey::new();
@@ -110,6 +128,18 @@ fn build_ui(app: &adw::Application) {
     window.add_controller(keys);
 
     window.present();
+}
+
+/// Wrap a section's group in a clamp with comfortable margins for a stack page.
+fn section_clamp(group: &adw::PreferencesGroup) -> adw::Clamp {
+    let clamp = adw::Clamp::new();
+    clamp.set_maximum_size(440);
+    clamp.set_margin_top(18);
+    clamp.set_margin_bottom(18);
+    clamp.set_margin_start(12);
+    clamp.set_margin_end(12);
+    clamp.set_child(Some(group));
+    clamp
 }
 
 /// COLORREF 0x00BBGGRR -> RGBA (opaque).
