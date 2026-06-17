@@ -31,6 +31,9 @@ Date=2026-06-15
 // (DWM-composited) session's desktop. See syslaunch/ and the PostShell autorun.
 %SysLaunchX64%=syslaunch.exe
 %SysLaunchA64%=syslaunch-arm64.exe
+// Optional GTK4/Libadwaita System Information helper (x64 only). startpe.exe
+// auto-detects it as a sibling; absent, StartPE uses its built-in window.
+%SysInfoX64%=SystemInfo.exe
 // COM CLSID used to get the loader pulled into Explorer at shell startup.
 %LoaderCLSID%={6F3D9B2A-1C4E-4E7A-9B58-2E1D7C0A5F31}
 // Base URL for release builds; the arch-specific binary name is appended.
@@ -51,11 +54,13 @@ If,%SourceArch%,Equal,x64,Begin
   Set,%BinaryName%,%BinaryX64%
   Set,%LoaderName%,%LoaderX64%
   Set,%SysLaunchName%,%SysLaunchX64%
+  Set,%SysInfoName%,%SysInfoX64%
 End
 Else,If,%SourceArch%,Equal,ARM64,Begin
   Set,%BinaryName%,%BinaryA64%
   Set,%LoaderName%,%LoaderA64%
   Set,%SysLaunchName%,%SysLaunchA64%
+  Set,%SysInfoName%,""
 End
 Else,Halt,"StartPE ERROR: Unsupported processor architecture [%SourceArch%]."
 
@@ -65,6 +70,13 @@ If,Not,ExistFile,"%ProgramsCache%\%ProgramFolder%\%SysLaunchName%",Run,%ScriptFi
 FileCopy,"%ProgramsCache%\%ProgramFolder%\%BinaryName%","%TargetPrograms%\%ProgramFolder%\%BinaryName%"
 FileCopy,"%ProgramsCache%\%ProgramFolder%\%LoaderName%","%TargetPrograms%\%ProgramFolder%\%LoaderName%"
 FileCopy,"%ProgramsCache%\%ProgramFolder%\%SysLaunchName%","%TargetPrograms%\%ProgramFolder%\%SysLaunchName%"
+
+// Optional GTK System Information helper: download if missing, copy when present.
+// Non-fatal (NOERR, no Halt) — startpe.exe falls back to its built-in window if absent.
+If,Not,%SysInfoName%,Equal,"",Begin
+  If,Not,ExistFile,"%ProgramsCache%\%ProgramFolder%\%SysInfoName%",WebGet,"%DownloadURL%%SysInfoName%","%ProgramsCache%\%ProgramFolder%\%SysInfoName%",NOERR
+  If,ExistFile,"%ProgramsCache%\%ProgramFolder%\%SysInfoName%",FileCopy,"%ProgramsCache%\%ProgramFolder%\%SysInfoName%","%TargetPrograms%\%ProgramFolder%\%SysInfoName%"
+End
 
 Run,%ScriptFile%,Config
 
