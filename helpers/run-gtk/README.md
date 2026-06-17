@@ -8,8 +8,9 @@ The command/history core (`src/run_exec.rs`) is reused from StartPE: expand env
 vars, split program from args, and `ShellExecute` (resolving bare names via
 PATH/App Paths like the classic Run box). History is shared with StartPE through
 `HKCU\Software\StartPE\RunHistory`. Only the presentation is rebuilt in gtk4-rs —
-a small libadwaita dialog with a prompt, an "Open:" entry plus a recent-commands
-dropdown, and Browse / Cancel / OK. A named mutex enforces single instance.
+a small libadwaita dialog with a prompt, an "Open:" entry with inline history
+autocomplete (no dropdown), and Browse / Cancel / OK. It opens bottom-left above
+the taskbar, Escape closes it, and a named mutex enforces single instance.
 
 This is the second GTK4 *shell helper* (after `sysinfo-gtk`): StartPE keeps its
 lean Win32 core and auto-detects this `RunBox.exe` as a sibling, falling back to
