@@ -134,6 +134,13 @@ thread_local! {
 /// the shell treats it like any app — taskbar/Alt+Tab listing, normal Z order,
 /// accent border.
 pub fn run_standalone() {
+    // This is also where any external `--run` redirect lands, so prefer the GTK
+    // helper here too (the sibling `RunBox.exe`, which self-guards single instance).
+    if let Some(app) = gtk_helper() {
+        if spawn_external(&app) {
+            return;
+        }
+    }
     unsafe {
         // Single instance: if a Run window is already up (this or another --run
         // process), focus it and exit instead of stacking a second one.
@@ -183,9 +190,16 @@ pub fn run_standalone() {
     }
 }
 
-/// Launch the Run window as a separate `startpe.exe --run` process. Called from
-/// the taskbar process for every Run entry point (Win+R, start menu, Win+X).
+/// Launch the Run window. Prefers the external GTK app configured in `RunApp` or
+/// a sibling `RunBox.exe` next to `startpe.exe`; otherwise opens the built-in
+/// window as a separate `startpe.exe --run` process. Called from the taskbar
+/// process for every Run entry point (Win+R, start menu, Win+X).
 pub fn launch() {
+    if let Some(app) = gtk_helper() {
+        if spawn_external(&app) {
+            return;
+        }
+    }
     if let Ok(exe) = std::env::current_exe() {
         if let Ok(child) = std::process::Command::new(exe).arg("--run").spawn() {
             // Grant the new process the right to come to the foreground (it isn't
@@ -194,6 +208,51 @@ pub fn launch() {
                 let _ = AllowSetForegroundWindow(child.id());
             }
         }
+    }
+}
+
+/// The GTK Run helper to launch, if any. An explicit `RunApp` override wins if
+/// set; otherwise a sibling `RunBox.exe` shipped next to `startpe.exe` (the
+/// default — both come from the same release). `None` => use the built-in window.
+/// Mirrors `sysinfo::gtk_helper`.
+fn gtk_helper() -> Option<String> {
+    if let Some(app) = crate::config::run_app() {
+        return Some(app);
+    }
+    let sibling = std::env::current_exe().ok()?.with_file_name("RunBox.exe");
+    sibling
+        .is_file()
+        .then(|| sibling.to_string_lossy().into_owned())
+}
+
+/// Spawn the GTK `RunBox.exe` helper. Returns false if it couldn't be started, so
+/// the caller falls back to the built-in window. The child inherits StartPE's
+/// token (SYSTEM in the PE) and environment (where the GTK4 runtime is on `PATH`).
+fn spawn_external(app: &str) -> bool {
+    match std::process::Command::new(app).spawn() {
+        Ok(child) => {
+            unsafe {
+                let _ = AllowSetForegroundWindow(child.id());
+            }
+            log_redirect(app);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+fn log_redirect(app: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("X:\\startpe.log")
+    {
+        let _ = writeln!(
+            f,
+            "StartPE v{} Run -> external app: {app}",
+            env!("CARGO_PKG_VERSION")
+        );
     }
 }
 

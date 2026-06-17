@@ -108,7 +108,10 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   `AllowSetForegroundWindow`) rather than hosting the window in the taskbar
   process. So the shell treats Run like any app: taskbar / Alt+Tab listing,
   normal Z order, and the accent window border. `FindWindowW` enforces single
-  instance; closing it ends the process
+  instance; closing it ends the process. As with System Information, a sibling
+  `RunBox.exe` (the GTK4/Libadwaita Run helper in `helpers/run-gtk/`, or a `RunApp`
+  override) is preferred when present — every entry point launches it instead,
+  falling back to this built-in window if absent (see `run_window::gtk_helper`)
 - `src/sysinfo.rs` — StartPE's **from-scratch dark System Information window**,
   replacing msinfo32 / the sysdm.cpl summary page (opened by the Win+X "System"
   entry). Same borderless double-buffered GDI approach as `run_window.rs`, but a
@@ -208,6 +211,7 @@ Current values (all `REG_DWORD`):
 | `LaunchAsSystem` | 0 | 1 = if StartPE starts under a lesser token, re-launch itself as SYSTEM via `syslaunch.exe` and exit (so it ends up SYSTEM no matter which vector started it). The PE build sets 1 for the Administrator-auto-login + DWM mode; default 0 so a normal run never elevates (see `main.rs`, `syslaunch/`) |
 | `FileManager` | _(unset)_ | File-browser command for This PC / Win+E. Unset = Explorer's This-PC view. In the DWM/Administrator-session PE, Explorer can't run as SYSTEM, so a portable manager (e.g. Eden Explorer) is set here by its component and launched with StartPE's token (SYSTEM). Not written by `StartPE.script` — set by the file-manager component so it isn't clobbered (see `taskbar::open_file_manager`) |
 | `SysInfoApp` | _(unset)_ | Optional **override** path to the GTK System Information helper. By default StartPE auto-detects a sibling `SystemInfo.exe` next to `startpe.exe` (both ship in the same release), so no config is needed; set this only to point elsewhere. Unset **and** no sibling = the built-in GDI window. The chosen exe is launched for Win+X → System, Win+Pause and This PC → Properties, inheriting StartPE's token/PATH (SYSTEM + the GTK4 runtime in PE). Not written by `StartPE.script` (see `sysinfo::gtk_helper`) |
+| `RunApp` | _(unset)_ | Optional **override** path to the GTK Run helper. By default StartPE auto-detects a sibling `RunBox.exe`; set this only to point elsewhere. Unset **and** no sibling = the built-in GDI Run box. Launched for every Run entry point (Win+R, start menu Run…, Win+X). Not written by `StartPE.script` (see `run_window::gtk_helper`) |
 
 Launch: the PEBakery script writes the Run key for classic logon flows and
 calls `AddAutoRun,PostShell` so winrx-creator/PhoenixPE images start StartPE

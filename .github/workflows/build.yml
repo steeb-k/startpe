@@ -66,14 +66,23 @@ jobs:
             ${{ matrix.syslaunch_asset }}
           generate_release_notes: true
 
-  # GTK4/Libadwaita System Information helper (SystemInfo.exe). Built with the
+  # GTK4/Libadwaita shell helpers (SystemInfo.exe, RunBox.exe). Built with the
   # MSYS2 ucrt64 toolchain + the GTK runtime, separate from the MSVC workspace
-  # (it's `exclude`d there). Runs after `build` so the release already exists
-  # before we attach to it (no create race). Ships in the same release;
-  # startpe.exe auto-detects it as a sibling.
-  sysinfo-gtk:
+  # (they're `exclude`d there). Runs after `build` so the release already exists
+  # before we attach to it (no create race; max-parallel 1 so the matrix entries
+  # don't race on the release either). Ship in the same release; startpe.exe
+  # auto-detects each as a sibling.
+  helpers-gtk:
     needs: build
     runs-on: windows-latest
+    strategy:
+      max-parallel: 1
+      matrix:
+        include:
+          - dir: helpers/sysinfo-gtk
+            asset: SystemInfo.exe
+          - dir: helpers/run-gtk
+            asset: RunBox.exe
     defaults:
       run:
         shell: msys2 {0}
@@ -92,20 +101,20 @@ jobs:
             mingw-w64-ucrt-x86_64-libadwaita
 
       - name: Build
-        run: cargo build --release --manifest-path helpers/sysinfo-gtk/Cargo.toml
+        run: cargo build --release --manifest-path ${{ matrix.dir }}/Cargo.toml
 
       - name: Stage asset
-        run: cp helpers/sysinfo-gtk/target/release/SystemInfo.exe SystemInfo.exe
+        run: cp ${{ matrix.dir }}/target/release/${{ matrix.asset }} ${{ matrix.asset }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: sysinfo-gtk
-          path: SystemInfo.exe
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
-          files: SystemInfo.exe
+          files: ${{ matrix.asset }}
           generate_release_notes: true
