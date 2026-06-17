@@ -98,10 +98,25 @@ cargo build --release --workspace --target aarch64-pc-windows-msvc  # ARM64
 `Settings.exe`). They are **excluded from the MSVC workspace** and
 build with the **MSYS2 ucrt64** toolchain + the shipped GTK runtime, not with the
 commands above — build them separately (`cd helpers/sysinfo-gtk && cargo build
---release` in a ucrt64 shell; CI has its own `sysinfo-gtk` job). They ship as
-extra assets in the same release; `startpe.exe` auto-detects them as siblings and
-the built-in GDI windows remain the fallback (so the main binary never depends on
-the GTK runtime). Keep `startpe.exe` itself free of any GTK/runtime dependency.
+--release` in a ucrt64 shell; CI builds all of them via the `helpers-gtk` matrix
+job). They ship as extra assets in the same release; `startpe.exe` auto-detects
+them as siblings and the built-in GDI windows remain the fallback (so the main
+binary never depends on the GTK runtime). Keep `startpe.exe` itself free of any
+GTK/runtime dependency.
+
+Two gotchas when adding/maintaining a helper:
+- **Resizable helpers must clamp maximize.** StartPE's taskbar does *not* reserve
+  the work area (`SPI_GETWORKAREA` is the full screen under StartPE), so a
+  maximizable window maximizes full-screen and the bar clips it. A resizable helper
+  must subclass its native HWND and clamp `WM_GETMINMAXINFO` to the work area minus
+  the `StartPE_Taskbar` strip — see `helpers/sysinfo-gtk/src/winfix.rs`. Fixed-size
+  helpers (run, settings) avoid this by being non-resizable.
+- **Live config changes use a registered message, not a shared call.** A helper that
+  changes `HKCU\Software\StartPE` and needs the *running* shell to react posts the
+  registered `StartPE_ReloadConfig` message (`RegisterWindowMessageW`, same string
+  both sides) to the `StartPE_Taskbar` window; the taskbar wndproc calls
+  `reload_config()`. See `helpers/settings-gtk/src/settings_io.rs` and the
+  `reload_msg` handler in `taskbar.rs`.
 
 Builds must stay warning-free. There are no unit tests; verification is
 manual. **Warning when testing on a real desktop:** `startpe.exe` hides the
