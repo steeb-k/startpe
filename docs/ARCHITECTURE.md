@@ -169,7 +169,13 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   documented comdlg32 `ChooseColorW` dialog). Opened from the taskbar's right-click
   menu. Changing a row writes the value to `HKCU\Software\StartPE` (see
   `config::save_*`) and calls `taskbar::reload_config` so it applies live; switches
-  needing the windows recreated take effect on the next launch
+  needing the windows recreated take effect on the next launch. As with the other
+  windows, a sibling `Settings.exe` (the GTK4/Libadwaita Settings helper in
+  `helpers/settings-gtk/`, or a `SettingsApp` override) is preferred when present:
+  it writes the same `HKCU` values and **posts the registered `StartPE_ReloadConfig`
+  message** to the taskbar, which calls `reload_config` — so the separate process
+  gets the same live apply (see `settings::gtk_helper`, the `reload_msg` handler in
+  `taskbar::wndproc`)
 - `src/config.rs` — registry-backed configuration (read from `HKLM` then `HKCU`;
   the settings pane writes runtime changes to `HKCU`)
 - `src/util.rs` — UTF-16 helpers, LOWORD/HIWORD
@@ -212,6 +218,7 @@ Current values (all `REG_DWORD`):
 | `FileManager` | _(unset)_ | File-browser command for This PC / Win+E. Unset = Explorer's This-PC view. In the DWM/Administrator-session PE, Explorer can't run as SYSTEM, so a portable manager (e.g. Eden Explorer) is set here by its component and launched with StartPE's token (SYSTEM). Not written by `StartPE.script` — set by the file-manager component so it isn't clobbered (see `taskbar::open_file_manager`) |
 | `SysInfoApp` | _(unset)_ | Optional **override** path to the GTK System Information helper. By default StartPE auto-detects a sibling `SystemInfo.exe` next to `startpe.exe` (both ship in the same release), so no config is needed; set this only to point elsewhere. Unset **and** no sibling = the built-in GDI window. The chosen exe is launched for Win+X → System, Win+Pause and This PC → Properties, inheriting StartPE's token/PATH (SYSTEM + the GTK4 runtime in PE). Not written by `StartPE.script` (see `sysinfo::gtk_helper`) |
 | `RunApp` | _(unset)_ | Optional **override** path to the GTK Run helper. By default StartPE auto-detects a sibling `RunBox.exe`; set this only to point elsewhere. Unset **and** no sibling = the built-in GDI Run box. Launched for every Run entry point (Win+R, start menu Run…, Win+X). Not written by `StartPE.script` (see `run_window::gtk_helper`) |
+| `SettingsApp` | _(unset)_ | Optional **override** path to the GTK Settings helper. By default StartPE auto-detects a sibling `Settings.exe`; set this only to point elsewhere. Unset **and** no sibling = the built-in GDI pane. The helper writes the same `HKCU` values and posts `StartPE_ReloadConfig` for live apply. Not written by `StartPE.script` (see `settings::gtk_helper`) |
 
 Launch: the PEBakery script writes the Run key for classic logon flows and
 calls `AddAutoRun,PostShell` so winrx-creator/PhoenixPE images start StartPE

@@ -87,6 +87,9 @@ struct State {
     /// Left edge of the start button (cluster may be centered).
     start_x: i32,
     shellhook_msg: u32,
+    /// Registered "StartPE_ReloadConfig" message: an external settings helper
+    /// posts it to ask us to re-read config and apply it live (`reload_config`).
+    reload_msg: u32,
     font: HFONT,
     font_small: HFONT,
     buttons: Vec<TaskButton>,
@@ -141,6 +144,7 @@ impl Taskbar {
                     hwnd: HWND::default(),
                     start_x: 0,
                     shellhook_msg: 0,
+                    reload_msg: 0,
                     font,
                     font_small,
                     buttons: Vec::new(),
@@ -1528,12 +1532,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         return LRESULT(0);
     }
 
+    // Custom (registered) message: an external settings helper changed config and
+    // is asking us to re-read it and apply live (mirrors the in-process pane).
+    let reload = STATE.with_borrow(|s| s.as_ref().map(|s| s.reload_msg).unwrap_or(0));
+    if reload != 0 && msg == reload {
+        reload_config();
+        return LRESULT(0);
+    }
+
     match msg {
         WM_CREATE => {
             let height = STATE.with_borrow_mut(|s| {
                 let s = s.as_mut().unwrap();
                 s.hwnd = hwnd;
                 s.shellhook_msg = RegisterWindowMessageW(w!("SHELLHOOK"));
+                s.reload_msg = RegisterWindowMessageW(w!("StartPE_ReloadConfig"));
                 scaled(s.cfg.taskbar_height)
             });
             register_appbar(hwnd, height);

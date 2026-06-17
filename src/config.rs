@@ -208,6 +208,25 @@ pub fn run_app() -> Option<String> {
     app
 }
 
+/// Path to an external Settings app — the GTK4/Libadwaita `Settings.exe` helper —
+/// if one is configured under `SettingsApp`. Same HKLM→HKCU read and override
+/// semantics as [`sysinfo_app`]: by default StartPE auto-detects a sibling
+/// `Settings.exe`, so this override is only needed to point elsewhere. See
+/// `settings::gtk_helper`.
+pub fn settings_app() -> Option<String> {
+    let mut app = None;
+    for hive in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
+        if let Ok(key) = RegKey::predef(hive).open_subkey(KEY) {
+            if let Ok(v) = key.get_value::<String, _>("SettingsApp") {
+                if !v.trim().is_empty() {
+                    app = Some(v);
+                }
+            }
+        }
+    }
+    app
+}
+
 /// Persist a single boolean setting (as a `REG_DWORD` 0/1).
 pub fn save_bool(name: &str, value: bool) {
     save_u32(name, value as u32);
