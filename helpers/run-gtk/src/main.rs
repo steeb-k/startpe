@@ -25,8 +25,9 @@ use windows::Win32::Foundation::{
 use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcessId};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, FindWindowW, GetSystemMetrics, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-    GetWindowThreadProcessId, SetForegroundWindow, SetWindowPos, SystemParametersInfoW, SM_CYSCREEN,
-    SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    GetWindowThreadProcessId, SetForegroundWindow, SetWindowPos, SystemParametersInfoW,
+    HWND_NOTOPMOST, HWND_TOPMOST, SM_CYSCREEN, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
 };
 
 const APP_ID: &str = "org.winrx.PeRun";
@@ -218,6 +219,15 @@ fn position_bottom_left() {
             0,
             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
         );
+        // Come to the front reliably. Spawned from StartPE, GTK's present() alone
+        // can leave us behind the desktop ("under the wallpaper") — the window is
+        // up (taskbar/peek shows it) but not foreground. Raise above everything,
+        // drop back to the normal band, then activate. SetWindowPos z-order
+        // changes don't need foreground rights; a spawned SetForegroundWindow can
+        // be denied, so it's a best-effort finish.
+        let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        let _ = SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        let _ = SetForegroundWindow(hwnd);
     }
 }
 
