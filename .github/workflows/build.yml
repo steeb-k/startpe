@@ -65,3 +65,47 @@ jobs:
             ${{ matrix.dll_asset }}
             ${{ matrix.syslaunch_asset }}
           generate_release_notes: true
+
+  # GTK4/Libadwaita System Information helper (SystemInfo.exe). Built with the
+  # MSYS2 ucrt64 toolchain + the GTK runtime, separate from the MSVC workspace
+  # (it's `exclude`d there). Runs after `build` so the release already exists
+  # before we attach to it (no create race). Ships in the same release;
+  # startpe.exe auto-detects it as a sibling.
+  sysinfo-gtk:
+    needs: build
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up MSYS2 ucrt64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: >-
+            mingw-w64-ucrt-x86_64-rust
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-libadwaita
+
+      - name: Build
+        run: cargo build --release --manifest-path helpers/sysinfo-gtk/Cargo.toml
+
+      - name: Stage asset
+        run: cp helpers/sysinfo-gtk/target/release/SystemInfo.exe SystemInfo.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: sysinfo-gtk
+          path: SystemInfo.exe
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: SystemInfo.exe
+          generate_release_notes: true

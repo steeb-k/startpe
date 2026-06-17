@@ -161,8 +161,8 @@ pub fn run_standalone() {
         return;
     }
     // This is also where "This PC → Properties" / sysdm.cpl lands, so honor the
-    // external-app redirect here too: prefer the configured GTK `SystemInfo.exe`.
-    if let Some(app) = crate::config::sysinfo_app() {
+    // GTK helper here too: prefer the sibling `SystemInfo.exe` (or `SysInfoApp`).
+    if let Some(app) = gtk_helper() {
         if spawn_external(&app) {
             return;
         }
@@ -189,7 +189,7 @@ pub fn launch() {
     if unsafe { focus_existing() } {
         return;
     }
-    if let Some(app) = crate::config::sysinfo_app() {
+    if let Some(app) = gtk_helper() {
         if spawn_external(&app) {
             return;
         }
@@ -217,10 +217,25 @@ unsafe fn focus_existing() -> bool {
     false
 }
 
-/// Spawn the configured external System Information app (the GTK `SystemInfo.exe`
-/// helper). Returns false if it couldn't be started, so the caller falls back to
-/// the built-in window. The child inherits StartPE's token (SYSTEM in the PE) and
-/// environment (where the GTK4 runtime is on `PATH`).
+/// The GTK System Information helper to launch, if any. An explicit `SysInfoApp`
+/// override wins if set; otherwise a sibling `SystemInfo.exe` shipped next to
+/// `startpe.exe` (the default — both come from the same release). `None` => use
+/// the built-in GDI window. So the libadwaita helper is used automatically when
+/// it's present, with no configuration, and the built-in window stays the fallback.
+fn gtk_helper() -> Option<String> {
+    if let Some(app) = crate::config::sysinfo_app() {
+        return Some(app);
+    }
+    let sibling = std::env::current_exe().ok()?.with_file_name("SystemInfo.exe");
+    sibling
+        .is_file()
+        .then(|| sibling.to_string_lossy().into_owned())
+}
+
+/// Spawn the GTK `SystemInfo.exe` helper. Returns false if it couldn't be
+/// started, so the caller falls back to the built-in window. The child inherits
+/// StartPE's token (SYSTEM in the PE) and environment (where the GTK4 runtime is
+/// on `PATH`).
 fn spawn_external(app: &str) -> bool {
     match std::process::Command::new(app).spawn() {
         Ok(child) => {

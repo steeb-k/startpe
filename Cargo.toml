@@ -1,9 +1,14 @@
 [workspace]
 members = ["loader", "syslaunch"]
+# GTK4/Libadwaita shell helpers (e.g. SystemInfo.exe) live here but build with the
+# MSYS2 ucrt64 (gnu) toolchain + the GTK runtime, not this MSVC workspace — so they
+# are excluded from `cargo build --workspace` and built by a separate CI job. They
+# ship in the same release and `startpe.exe` auto-detects them as siblings.
+exclude = ["helpers/sysinfo-gtk"]
 
 [package]
 name = "startpe"
-version = "0.1.71"
+version = "0.1.72"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Free, open-source taskbar and start menu for Windows PE environments"
