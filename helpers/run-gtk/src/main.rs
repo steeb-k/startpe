@@ -5,22 +5,29 @@
 //! winrx-creator GTK4 runtime, the libadwaita counterpart to StartPE's Win32/GDI
 //! Run box (`startpe/src/run_window.rs`). The command/history core is reused
 //! (`run_exec`); the UI is a small libadwaita dialog: prompt, an "Open:" entry
-//! with a history dropdown, and Browse / Cancel / OK. History is shared with
-//! StartPE via `HKCU\Software\StartPE\RunHistory`.
+//! with inline history autocomplete, and Browse / Cancel / OK. History is shared
+//! with StartPE via `HKCU\Software\StartPE\RunHistory`.
+//!
+//! Like the GDI Run box it seats itself bottom-left above StartPE's taskbar.
+//! GTK4 doesn't let an app position its own window, so we move the native HWND
+//! with `SetWindowPos` once it maps (the one place this helper reaches past GTK).
 
 mod run_exec;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use gtk::{
-    Align, Box as GtkBox, Button, Entry, Image, Label, ListBox, ListBoxRow, MenuButton,
-    Orientation, PolicyType, Popover, ScrolledWindow, SelectionMode,
-};
+use gtk::{Align, Box as GtkBox, Button, Entry, EventControllerKey, Image, Label, Orientation};
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
-use windows::Win32::System::Threading::CreateMutexW;
-use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, SetForegroundWindow};
+use windows::Win32::Foundation::{
+    CloseHandle, GetLastError, BOOL, ERROR_ALREADY_EXISTS, HWND, LPARAM, RECT,
+};
+use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcessId};
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, FindWindowW, GetSystemMetrics, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, SetForegroundWindow, SetWindowPos, SystemParametersInfoW, SM_CYSCREEN,
+    SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+};
 
 const APP_ID: &str = "org.winrx.PeRun";
 const PROMPT: &str = "Type the name of a program, folder, document, or Internet resource, and StartPE will open it for you.";
@@ -46,59 +53,18 @@ fn build_ui(app: &adw::Application) {
     prompt_row.append(&icon);
     prompt_row.append(&prompt);
 
-    // --- Input row: "Open:" + entry + history dropdown. ---
+    // --- Input row: "Open:" + entry (inline history autocomplete, no dropdown). ---
     let entry = Entry::new();
     entry.set_hexpand(true);
     entry.set_activates_default(true); // Enter triggers the default (OK)
+    attach_completion(&entry, &history);
     if let Some(last) = history.last() {
         entry.set_text(last);
         entry.select_region(0, -1); // preselect, like the classic Run box
     }
-
-    let history_pop = Popover::new();
-    let list = ListBox::new();
-    list.set_selection_mode(SelectionMode::None);
-    list.add_css_class("menu");
-    for item in history.iter().rev() {
-        let label = Label::new(Some(item));
-        label.set_xalign(0.0);
-        label.set_margin_top(4);
-        label.set_margin_bottom(4);
-        label.set_margin_start(6);
-        label.set_margin_end(6);
-        let row = ListBoxRow::new();
-        row.set_child(Some(&label));
-        list.append(&row);
-    }
-    {
-        let (entry, pop) = (entry.clone(), history_pop.clone());
-        list.connect_row_activated(move |_, row| {
-            if let Some(label) = row.child().and_downcast::<Label>() {
-                entry.set_text(&label.text());
-                entry.set_position(-1);
-            }
-            pop.popdown();
-            entry.grab_focus();
-        });
-    }
-    let scroller = ScrolledWindow::new();
-    scroller.set_hscrollbar_policy(PolicyType::Never);
-    scroller.set_propagate_natural_height(true);
-    scroller.set_max_content_height(220);
-    scroller.set_child(Some(&list));
-    history_pop.set_child(Some(&scroller));
-
-    let dropdown = MenuButton::new();
-    dropdown.set_icon_name("pan-down-symbolic");
-    dropdown.set_tooltip_text(Some("Recent commands"));
-    dropdown.set_popover(Some(&history_pop));
-    dropdown.set_sensitive(!history.is_empty());
-
     let input_row = GtkBox::new(Orientation::Horizontal, 6);
-    let open_label = Label::new(Some("Open:"));
-    input_row.append(&open_label);
+    input_row.append(&Label::new(Some("Open:")));
     input_row.append(&entry);
-    input_row.append(&dropdown);
 
     // --- Buttons: Browse… / Cancel / OK. ---
     let browse = Button::with_label("Browse\u{2026}");
@@ -147,8 +113,48 @@ fn build_ui(app: &adw::Application) {
         browse.connect_clicked(move |_| browse_file(&window, &entry));
     }
 
+    // Escape closes the window (capture phase so the entry doesn't swallow it).
+    let keys = EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    {
+        let window = window.clone();
+        keys.connect_key_pressed(move |_, keyval, _, _| {
+            if keyval == gtk::gdk::Key::Escape {
+                window.close();
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+    }
+    window.add_controller(keys);
+
+    // Seat it bottom-left above the taskbar once the native window exists.
+    window.connect_map(|_| position_bottom_left());
+
     window.present();
     entry.grab_focus();
+}
+
+/// Inline autocomplete from history with no visible dropdown — typing completes
+/// to the most recent matching command (suffix selected), which is the "auto-fill"
+/// behavior of the classic Run box. (`EntryCompletion` is deprecated in GTK 4.10
+/// but is the simplest correct inline completion; confined here behind `allow`.)
+#[allow(deprecated)]
+fn attach_completion(entry: &Entry, history: &[String]) {
+    let store = gtk::ListStore::new(&[glib::Type::STRING]);
+    for item in history.iter().rev() {
+        // newest first, so the freshest match wins
+        let iter = store.append();
+        store.set_value(&iter, 0, &item.to_value());
+    }
+    let completion = gtk::EntryCompletion::new();
+    completion.set_model(Some(&store));
+    completion.set_text_column(0);
+    completion.set_inline_completion(true);
+    completion.set_popup_completion(false); // no dropdown — inline only
+    completion.set_minimum_key_length(1);
+    entry.set_completion(Some(&completion));
 }
 
 /// Read the command, record it, and run it. Closes on success; on failure shows
@@ -185,6 +191,95 @@ fn browse_file(window: &adw::ApplicationWindow, entry: &Entry) {
             }
         }
     });
+}
+
+// ---- native window placement ----------------------------------------------
+
+/// Move our window to the bottom-left, just above StartPE's taskbar (or the work
+/// area if the taskbar isn't found). GTK4 can't position its own windows, so we
+/// nudge the native HWND directly.
+fn position_bottom_left() {
+    unsafe {
+        let Some(hwnd) = own_window() else { return };
+        let mut wr = RECT::default();
+        if GetWindowRect(hwnd, &mut wr).is_err() {
+            return;
+        }
+        let height = wr.bottom - wr.top;
+        let bottom = startpe_taskbar_top().unwrap_or_else(work_area_bottom);
+        let margin = 12;
+        let y = (bottom - height - margin).max(margin);
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            margin,
+            y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+}
+
+/// The top edge of StartPE's taskbar, so we sit just above it (matches the GDI
+/// Run box, which doesn't reserve work area so `SPI_GETWORKAREA` is the full screen).
+fn startpe_taskbar_top() -> Option<i32> {
+    unsafe {
+        let bar = FindWindowW(w!("StartPE_Taskbar"), PCWSTR::null()).ok()?;
+        if bar.is_invalid() {
+            return None;
+        }
+        let mut rc = RECT::default();
+        (GetWindowRect(bar, &mut rc).is_ok() && rc.top > 0).then_some(rc.top)
+    }
+}
+
+fn work_area_bottom() -> i32 {
+    unsafe {
+        let mut wa = RECT::default();
+        let ok = SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            Some(&mut wa as *mut _ as *mut std::ffi::c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+        .is_ok();
+        if ok && wa.bottom > 0 {
+            wa.bottom
+        } else {
+            GetSystemMetrics(SM_CYSCREEN)
+        }
+    }
+}
+
+/// Find this process's "Run" window (the one we just mapped).
+fn own_window() -> Option<HWND> {
+    unsafe {
+        let mut data = (GetCurrentProcessId(), HWND::default());
+        let _ = EnumWindows(Some(enum_proc), LPARAM(&mut data as *mut _ as isize));
+        (!data.1.is_invalid()).then_some(data.1)
+    }
+}
+
+unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let data = &mut *(lparam.0 as *mut (u32, HWND));
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    if pid == data.0 && window_title(hwnd) == "Run" {
+        data.1 = hwnd;
+        return BOOL(0); // found it; stop enumerating
+    }
+    BOOL(1)
+}
+
+unsafe fn window_title(hwnd: HWND) -> String {
+    let len = GetWindowTextLengthW(hwnd);
+    if len <= 0 {
+        return String::new();
+    }
+    let mut buf = vec![0u16; len as usize + 1];
+    let n = GetWindowTextW(hwnd, &mut buf);
+    String::from_utf16_lossy(&buf[..n as usize])
 }
 
 // ---- single instance ------------------------------------------------------
