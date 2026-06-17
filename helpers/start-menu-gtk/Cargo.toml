@@ -1,0 +1,31 @@
+[package]
+name = "pe-start-menu-gtk"
+version = "0.1.0"
+edition = "2021"
+description = "GTK4/Libadwaita Start menu for Windows PE (thin client of the winrx-creator GTK4 runtime)"
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "StartMenu"
+path = "src/main.rs"
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.9", features = ["v4_10"] }
+adw = { package = "libadwaita", version = "0.7", features = ["v1_4"] }
+
+[dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_FileSystem",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -4,7 +4,7 @@ members = ["loader", "syslaunch"]
 # MSYS2 ucrt64 (gnu) toolchain + the GTK runtime, not this MSVC workspace — so they
 # are excluded from `cargo build --workspace` and built by a separate CI job. They
 # ship in the same release and `startpe.exe` auto-detects them as siblings.
-exclude = ["helpers/sysinfo-gtk", "helpers/run-gtk", "helpers/settings-gtk"]
+exclude = ["helpers/sysinfo-gtk", "helpers/run-gtk", "helpers/settings-gtk", "helpers/start-menu-gtk"]
 
 [package]
 name = "startpe"
