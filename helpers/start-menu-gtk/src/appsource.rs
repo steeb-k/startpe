@@ -129,7 +129,7 @@ fn sort_items(items: &mut [AppItem]) {
 /// non-empty query it searches recursively; inside a folder it lists that folder
 /// (with a Back row); at the root it lists both Start Menu roots merged. Icons are
 /// loaded for every file/folder item.
-pub fn enumerate(stack: &[PathBuf], query: &str) -> Vec<AppItem> {
+pub fn enumerate(stack: &[PathBuf], query: &str, showing_all: bool) -> Vec<AppItem> {
     let mut items = Vec::new();
     let query = query.trim().to_lowercase();
 
@@ -158,14 +158,93 @@ pub fn enumerate(stack: &[PathBuf], query: &str) -> Vec<AppItem> {
         }
         sort_items(&mut items);
     } else {
-        for root in start_menu_roots() {
-            collect_dir(&root, &mut items);
+        // Root: the pinned view (PinUtil.ini start-menu pins, in pin order) unless
+        // the user switched to "All apps", or there are no pins.
+        let pins = if showing_all { Vec::new() } else { start_menu_pins() };
+        if pins.is_empty() {
+            for root in start_menu_roots() {
+                collect_dir(&root, &mut items);
+            }
+            sort_items(&mut items);
+        } else {
+            for p in pins {
+                let name = p
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                items.push(AppItem {
+                    kind: ItemKind::Launch(p),
+                    name,
+                    icon: None,
+                });
+            }
         }
-        sort_items(&mut items);
     }
 
     load_icons(&mut items);
     items
+}
+
+/// Whether any start-menu pins are configured (so the menu shows the pinned view
+/// and an "All apps" toggle).
+pub fn has_pins() -> bool {
+    !start_menu_pins().is_empty()
+}
+
+/// Start-menu pins from `%Windir%\System32\PinUtil.ini` (`[PinUtil]` `StartMenu<n>`),
+/// in pin-position order. Ported from StartPE's `pins.rs`.
+fn start_menu_pins() -> Vec<PathBuf> {
+    let windir = std::env::var("windir")
+        .or_else(|_| std::env::var("SystemRoot"))
+        .unwrap_or_else(|_| "X:\\Windows".to_string());
+    let ini = format!("{windir}\\System32\\PinUtil.ini");
+    let Ok(bytes) = std::fs::read(&ini) else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let mut items: Vec<(u32, PathBuf)> = Vec::new();
+    let mut in_section = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_section = line.eq_ignore_ascii_case("[PinUtil]");
+            continue;
+        }
+        if !in_section || line.is_empty() || line.starts_with(';') || line.starts_with("//") {
+            continue;
+        }
+        let Some((key, val)) = line.split_once('=') else {
+            continue;
+        };
+        let val = val.trim();
+        if val.is_empty() {
+            continue;
+        }
+        let key = key.trim().to_ascii_lowercase();
+        if let Some(idx) = key.strip_prefix("startmenu").and_then(|s| s.parse::<u32>().ok()) {
+            items.push((idx, PathBuf::from(expand_env(val))));
+        }
+    }
+    items.sort_by_key(|(i, _)| *i);
+    items.into_iter().map(|(_, p)| p).collect()
+}
+
+fn expand_env(s: &str) -> String {
+    use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
+    let src: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        let needed = ExpandEnvironmentStringsW(PCWSTR(src.as_ptr()), None);
+        if needed == 0 {
+            return s.to_string();
+        }
+        let mut buf = vec![0u16; needed as usize];
+        let written = ExpandEnvironmentStringsW(PCWSTR(src.as_ptr()), Some(&mut buf));
+        if written == 0 {
+            return s.to_string();
+        }
+        String::from_utf16_lossy(&buf[..(written as usize).saturating_sub(1)])
+    }
 }
 
 fn load_icons(items: &mut [AppItem]) {
