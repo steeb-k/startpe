@@ -62,6 +62,7 @@ struct Ui {
     refresh: Rc<dyn Fn()>,
     shown: Rc<Cell<bool>>,
     shown_at: Rc<Cell<Instant>>,
+    showing_all: Rc<Cell<bool>>,
 }
 
 fn build_ui(app: &adw::Application) {
@@ -78,8 +79,9 @@ fn build_ui(app: &adw::Application) {
     let actions: Rc<RefCell<Vec<RowAction>>> = Rc::new(RefCell::new(Vec::new()));
     let shown = Rc::new(Cell::new(false));
     let shown_at = Rc::new(Cell::new(Instant::now()));
+    let showing_all = Rc::new(Cell::new(false));
 
-    // --- Left pane: search + app list. ---
+    // --- Left pane: app list, an All apps / Pinned toggle, then search (bottom). ---
     let search = SearchEntry::new();
     search.set_placeholder_text(Some("Search programs"));
     search.set_margin_top(8);
@@ -98,19 +100,30 @@ fn build_ui(app: &adw::Application) {
     list_scroll.set_vexpand(true);
     list_scroll.set_child(Some(&list));
 
-    let left = GtkBox::new(Orientation::Vertical, 0);
-    left.set_hexpand(true);
-    left.append(&search);
-    left.append(&list_scroll);
+    // "All apps" / "Pinned apps" toggle — only shown when start-menu pins exist.
+    let has_pins = appsource::has_pins();
+    let all_apps = Button::with_label("All apps");
+    all_apps.add_css_class("flat");
+    all_apps.set_margin_start(8);
+    all_apps.set_margin_end(8);
+    if let Some(lbl) = all_apps.child().and_downcast::<Label>() {
+        lbl.set_xalign(0.0);
+    }
 
     let refresh: Rc<dyn Fn()> = {
-        let (list, stack, search, actions) =
-            (list.clone(), stack.clone(), search.clone(), actions.clone());
+        let (list, stack, search, actions, showing_all, all_apps) = (
+            list.clone(),
+            stack.clone(),
+            search.clone(),
+            actions.clone(),
+            showing_all.clone(),
+            all_apps.clone(),
+        );
         Rc::new(move || {
             while let Some(child) = list.first_child() {
                 list.remove(&child);
             }
-            let items = appsource::enumerate(&stack.borrow(), &search.text());
+            let items = appsource::enumerate(&stack.borrow(), &search.text(), showing_all.get());
             let mut acts = Vec::with_capacity(items.len());
             for item in items {
                 let (row, action) = make_row(item);
@@ -118,8 +131,29 @@ fn build_ui(app: &adw::Application) {
                 acts.push(action);
             }
             *actions.borrow_mut() = acts;
+            all_apps.set_label(if showing_all.get() {
+                "Pinned apps"
+            } else {
+                "All apps"
+            });
         })
     };
+    {
+        let (showing_all, refresh) = (showing_all.clone(), refresh.clone());
+        all_apps.connect_clicked(move |_| {
+            showing_all.set(!showing_all.get());
+            refresh();
+        });
+    }
+
+    let left = GtkBox::new(Orientation::Vertical, 0);
+    left.set_hexpand(true);
+    left.append(&list_scroll);
+    if has_pins {
+        left.append(&Separator::new(Orientation::Horizontal));
+        left.append(&all_apps);
+    }
+    left.append(&search);
 
     let window = adw::ApplicationWindow::builder()
         .application(app)
@@ -137,6 +171,7 @@ fn build_ui(app: &adw::Application) {
         refresh: refresh.clone(),
         shown: shown.clone(),
         shown_at: shown_at.clone(),
+        showing_all: showing_all.clone(),
     };
 
     let hide: Rc<dyn Fn()> = {
@@ -237,10 +272,11 @@ fn toggle_menu(ui: &Ui) {
     if ui.shown.get() {
         hide_menu(ui);
     } else {
-        // Open at the root with an empty search. `present()` maps the window;
-        // positioning + foreground happen on its `map` signal (HWND ready then).
+        // Open at the root (pinned view) with an empty search. `present()` maps the
+        // window; positioning + foreground happen on its `map` signal.
         ui.stack.borrow_mut().clear();
         ui.search.set_text("");
+        ui.showing_all.set(false);
         (ui.refresh)();
         ui.shown.set(true);
         ui.shown_at.set(Instant::now());
@@ -297,14 +333,30 @@ fn make_row(item: AppItem) -> (ListBoxRow, RowAction) {
 /// (symbolic icon, label, ShellExecute target). Folder paths open in Explorer.
 fn right_links() -> Vec<(&'static str, String, String)> {
     let profile = std::env::var("USERPROFILE").unwrap_or_else(|_| "X:\\Users\\Default".into());
-    let user = std::env::var("USERNAME").unwrap_or_else(|_| "User".into());
     vec![
-        ("user-home-symbolic", user, profile.clone()),
         ("folder-download-symbolic", "Downloads".into(), format!("{profile}\\Downloads")),
         ("drive-harddisk-symbolic", "This PC".into(), "shell:MyComputerFolder".into()),
         ("applications-system-symbolic", "Control Panel".into(), "control.exe".into()),
         ("utilities-terminal-symbolic", "Command Prompt".into(), "cmd.exe".into()),
     ]
+}
+
+/// The configured user picture (`UserPicture` in the registry) as a texture, if set.
+fn user_picture() -> Option<gtk::gdk::Texture> {
+    let mut path: Option<String> = None;
+    for hive in [
+        winreg::enums::HKEY_LOCAL_MACHINE,
+        winreg::enums::HKEY_CURRENT_USER,
+    ] {
+        if let Ok(k) = winreg::RegKey::predef(hive).open_subkey("Software\\StartPE") {
+            if let Ok(v) = k.get_value::<String, _>("UserPicture") {
+                if !v.is_empty() {
+                    path = Some(v);
+                }
+            }
+        }
+    }
+    gtk::gdk::Texture::from_filename(path?).ok()
 }
 
 fn build_right_pane(hide: Rc<dyn Fn()>) -> GtkBox {
@@ -314,6 +366,34 @@ fn build_right_pane(hide: Rc<dyn Fn()>) -> GtkBox {
     right.set_margin_bottom(10);
     right.set_margin_start(8);
     right.set_margin_end(8);
+
+    // User avatar + name (opens the profile folder).
+    let username = std::env::var("USERNAME").unwrap_or_else(|_| "User".into());
+    let profile = std::env::var("USERPROFILE").unwrap_or_else(|_| "X:\\Users\\Default".into());
+    let avatar = adw::Avatar::new(44, Some(&username), true);
+    if let Some(tex) = user_picture() {
+        avatar.set_custom_image(Some(&tex));
+    }
+    let name = Label::new(Some(&username));
+    name.set_xalign(0.0);
+    name.set_hexpand(true);
+    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    name.add_css_class("title-4");
+    let header_row = GtkBox::new(Orientation::Horizontal, 10);
+    header_row.append(&avatar);
+    header_row.append(&name);
+    let header = Button::builder().child(&header_row).build();
+    header.add_css_class("flat");
+    header.add_css_class("sm-rightbtn");
+    {
+        let hide = hide.clone();
+        header.connect_clicked(move |_| {
+            appsource::launch(&profile, "");
+            hide();
+        });
+    }
+    right.append(&header);
+    right.append(&Separator::new(Orientation::Horizontal));
 
     for (icon, label, target) in right_links() {
         let b = link_button(icon, &label);
