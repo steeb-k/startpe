@@ -100,8 +100,11 @@ updated when behavior or config values change.
 ```
 cargo build --workspace                                 # dev (startpe.exe + startpe_loader.dll)
 cargo build --release --workspace                       # x64
-cargo build --release --workspace --target aarch64-pc-windows-msvc  # ARM64
 ```
+
+StartPE is **x64-only**: ARM64 builds were dropped permanently (no ARM PE
+target to run on) — don't add an aarch64 target, CI matrix entry, or
+`-arm64` release assets back.
 
 `helpers/` holds the GTK4/Libadwaita shell helpers (`helpers/sysinfo-gtk` →
 `SystemInfo.exe`, `helpers/run-gtk` → `RunBox.exe`, `helpers/settings-gtk` →
@@ -153,11 +156,12 @@ both paths for any change in window enumeration, peek, or drawing.
 
 ## Releases / CI
 
-`.github/workflows/build.yml` builds x64 + ARM64 on every push; pushing a tag
-`v*` creates a GitHub release with assets `startpe.exe` and
-`startpe-arm64.exe` — those exact names are what `pebakery/StartPE.script`
-downloads from `releases/latest/download/`, so never rename them. Bump the
-version in `Cargo.toml` and the script's `[Main]` section when tagging.
+`.github/workflows/build.yml` builds x64 on every push; pushing a tag `v*`
+creates a GitHub release with assets `startpe.exe`, `startpe_loader.dll`,
+`syslaunch.exe`, and the GTK helper exes — those exact names are what
+`pebakery/StartPE.script` downloads from `releases/latest/download/`, so never
+rename them. Bump the version in `Cargo.toml` and the script's `[Main]`
+section when tagging.
 
 ## PE integration context
 

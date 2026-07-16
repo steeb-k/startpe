@@ -128,8 +128,7 @@ pane writes runtime changes to `HKCU`. See the value table in
 ## Building
 
 ```
-cargo build --release --workspace                                   # x64 (startpe.exe + startpe_loader.dll)
-cargo build --release --workspace --target aarch64-pc-windows-msvc  # ARM64
+cargo build --release --workspace   # x64 (startpe.exe + startpe_loader.dll + syslaunch.exe)
 ```
 
 Produces a single self-contained `startpe.exe` (~370 KB, no runtime

@@ -13,20 +13,13 @@ jobs:
   build:
     runs-on: windows-latest
     strategy:
-      # Build archs sequentially so the two jobs don't race to create the same
-      # tag's GitHub release (softprops/action-gh-release "already_exists").
-      max-parallel: 1
+      # x64 only — ARM64 was dropped permanently (no ARM PE target to run on).
       matrix:
         include:
           - target: x86_64-pc-windows-msvc
             exe_asset: startpe.exe
             dll_asset: startpe_loader.dll
             syslaunch_asset: syslaunch.exe
-          # TODO: re-enable ARM64 builds later (temporarily disabled).
-          # - target: aarch64-pc-windows-msvc
-          #   exe_asset: startpe-arm64.exe
-          #   dll_asset: startpe_loader-arm64.dll
-          #   syslaunch_asset: syslaunch-arm64.exe
     steps:
       - uses: actions/checkout@v6
 
@@ -37,9 +30,8 @@ jobs:
       - name: Build
         run: cargo build --release --workspace --target ${{ matrix.target }}
 
-      # Release assets keep the names the PEBakery script expects (startpe.exe /
-      # startpe-arm64.exe, startpe_loader.dll / startpe_loader-arm64.dll,
-      # syslaunch.exe / syslaunch-arm64.exe).
+      # Release assets keep the names the PEBakery script expects
+      # (startpe.exe, startpe_loader.dll, syslaunch.exe).
       - name: Stage assets
         shell: pwsh
         run: |

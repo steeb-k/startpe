@@ -5,6 +5,3 @@
 # isn't already in System32 would make the injected DLL fail to load silently.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
-
-[target.aarch64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]

@@ -418,9 +418,8 @@ unsafe fn probe_shell_windows() {
 }
 
 /// Launch `startpe.exe` from the loader's own directory. The exe name is
-/// derived from the DLL name so the arch-specific pair stays matched
-/// (`startpe_loader.dll` -> `startpe.exe`, `startpe_loader-arm64.dll` ->
-/// `startpe-arm64.exe`).
+/// derived from the DLL name (`startpe_loader.dll` -> `startpe.exe`) so a
+/// renamed pair stays matched.
 unsafe fn launch_startpe() {
     let module = HMODULE(G_HMODULE.load(Relaxed) as *mut c_void);
     let mut buf = [0u16; 520];

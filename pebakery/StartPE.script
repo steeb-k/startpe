@@ -22,27 +22,25 @@ Date=2026-06-15
 
 [Variables]
 %ProgramFolder%=StartPE
+// StartPE is x64-only (ARM64 support was dropped).
 %BinaryX64%=startpe.exe
-%BinaryA64%=startpe-arm64.exe
-// Explorer-side loader DLL (injected via FolderExtensions) — arch-matched to the binary.
+// Explorer-side loader DLL (injected via FolderExtensions).
 %LoaderX64%=startpe_loader.dll
-%LoaderA64%=startpe_loader-arm64.dll
 // SYSTEM launcher: re-launches startpe.exe as SYSTEM onto the interactive
 // (DWM-composited) session's desktop. See syslaunch/ and the PostShell autorun.
 %SysLaunchX64%=syslaunch.exe
-%SysLaunchA64%=syslaunch-arm64.exe
-// Optional GTK4/Libadwaita System Information helper (x64 only). startpe.exe
+// Optional GTK4/Libadwaita System Information helper. startpe.exe
 // auto-detects it as a sibling; absent, StartPE uses its built-in window.
 %SysInfoX64%=SystemInfo.exe
-// Optional GTK4/Libadwaita Run helper (x64 only). Same sibling auto-detect.
+// Optional GTK4/Libadwaita Run helper. Same sibling auto-detect.
 %RunBoxX64%=RunBox.exe
-// Optional GTK4/Libadwaita Settings helper (x64 only). Same sibling auto-detect.
+// Optional GTK4/Libadwaita Settings helper. Same sibling auto-detect.
 %SettingsX64%=Settings.exe
-// Optional GTK4/Libadwaita Start menu helper (x64 only). Same sibling auto-detect.
+// Optional GTK4/Libadwaita Start menu helper. Same sibling auto-detect.
 %StartMenuX64%=StartMenu.exe
 // COM CLSID used to get the loader pulled into Explorer at shell startup.
 %LoaderCLSID%={6F3D9B2A-1C4E-4E7A-9B58-2E1D7C0A5F31}
-// Base URL for release builds; the arch-specific binary name is appended.
+// Base URL for release builds; the binary name is appended.
 %DownloadURL%=https://github.com/steeb-k/startpe/releases/latest/download/
 
 [Process]
@@ -65,16 +63,7 @@ If,%SourceArch%,Equal,x64,Begin
   Set,%SettingsName%,%SettingsX64%
   Set,%StartMenuName%,%StartMenuX64%
 End
-Else,If,%SourceArch%,Equal,ARM64,Begin
-  Set,%BinaryName%,%BinaryA64%
-  Set,%LoaderName%,%LoaderA64%
-  Set,%SysLaunchName%,%SysLaunchA64%
-  Set,%SysInfoName%,""
-  Set,%RunBoxName%,""
-  Set,%SettingsName%,""
-  Set,%StartMenuName%,""
-End
-Else,Halt,"StartPE ERROR: Unsupported processor architecture [%SourceArch%]."
+Else,Halt,"StartPE ERROR: Unsupported processor architecture [%SourceArch%] (StartPE is x64-only)."
 
 If,Not,ExistFile,"%ProgramsCache%\%ProgramFolder%\%BinaryName%",Run,%ScriptFile%,DownloadProgram
 If,Not,ExistFile,"%ProgramsCache%\%ProgramFolder%\%LoaderName%",Run,%ScriptFile%,DownloadProgram
