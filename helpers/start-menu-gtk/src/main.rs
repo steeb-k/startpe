@@ -461,9 +461,8 @@ fn build_right_pane(hide: Rc<dyn Fn()>) -> GtkBox {
     right.set_margin_start(8);
     right.set_margin_end(8);
 
-    // User avatar + name (opens the profile folder).
+    // User avatar + name — a plain, non-clickable header.
     let username = std::env::var("USERNAME").unwrap_or_else(|_| "User".into());
-    let profile = std::env::var("USERPROFILE").unwrap_or_else(|_| "X:\\Users\\Default".into());
     let avatar = adw::Avatar::new(44, Some(&username), true);
     if let Some(tex) = user_picture() {
         avatar.set_custom_image(Some(&tex));
@@ -474,19 +473,13 @@ fn build_right_pane(hide: Rc<dyn Fn()>) -> GtkBox {
     name.set_ellipsize(gtk::pango::EllipsizeMode::End);
     name.add_css_class("title-4");
     let header_row = GtkBox::new(Orientation::Horizontal, 10);
+    header_row.set_margin_top(8);
+    header_row.set_margin_bottom(8);
+    header_row.set_margin_start(10);
+    header_row.set_margin_end(10);
     header_row.append(&avatar);
     header_row.append(&name);
-    let header = Button::builder().child(&header_row).build();
-    header.add_css_class("flat");
-    header.add_css_class("sm-rightbtn");
-    {
-        let hide = hide.clone();
-        header.connect_clicked(move |_| {
-            appsource::launch(&profile, "");
-            hide();
-        });
-    }
-    right.append(&header);
+    right.append(&header_row);
 
     for (icon, label, target) in right_links() {
         let b = link_button(icon, &label);
