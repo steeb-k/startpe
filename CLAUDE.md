@@ -119,12 +119,14 @@ binary never depends on the GTK runtime). Keep `startpe.exe` itself free of any
 GTK/runtime dependency.
 
 Gotchas when adding/maintaining a helper:
-- **No local GTK toolchain on this machine.** The helpers build only in CI
-  (`helpers-gtk` matrix job, MSYS2 ucrt64 + gtk4/libadwaita); `C:\gtk-msys2-x64`
-  is just the shipped runtime prefix, with no compiler or pkg-config. To verify
-  helper changes locally, keep Win32-only logic in toolkit-free modules (e.g.
-  `appsource.rs`, `winicon.rs` import no GTK) and `cargo check` them in a scratch
-  crate with the same `windows` features. Final exes come from CI.
+- **Helpers DO build locally** — with the normal MSVC toolchain against the
+  gvsbuild GTK stack in `C:\gtk` (persisted user env: `PKG_CONFIG_PATH=C:\gtk\lib\pkgconfig`,
+  `LIB=C:\gtk\lib`, `C:\gtk\bin` on PATH): `cd helpers/<name> && cargo build --release`.
+  Use that to compile-check and look-test GTK changes before pushing. But
+  **release binaries still come from CI** (MSYS2 ucrt64 job): local MSVC builds
+  link gvsbuild DLL names (`gtk-4-1.dll`), while the PE ships winrx-creator's
+  MSYS2 runtime (`libgtk-4-1.dll`) — a locally built exe won't run in the PE.
+  (`C:\gtk-msys2-x64` is a copy of that runtime prefix — no compiler in it.)
 - **GTK windows and StartPE's own taskbar/Alt+Tab.** All GTK4 toplevels share
   one window class, and GDK caches ex-style bits — a `WS_EX_TOOLWINDOW` set from
   the helper can race the taskbar's enumeration or be rewritten by GDK. A helper
