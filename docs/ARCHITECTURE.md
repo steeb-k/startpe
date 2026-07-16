@@ -17,10 +17,15 @@ StartAllBack restyles Explorer's taskbar in-process. StartPE instead:
 2. Hides Explorer's `Shell_TrayWnd` (and `Shell_SecondaryTrayWnd`) at startup
    and re-hides from a watchdog timer in case Explorer restarts.
 3. Creates its own appbar (`SHAppBarMessage`/`ABM_NEW`) docked to a screen
-   edge, so maximized windows respect the taskbar area.
+   edge, and reserves the strip in the work area itself with `SPI_SETWORKAREA`
+   (the appbar reservation is serviced by Explorer's tray, which StartPE hides
+   and which is broken on stripped PEs — without the explicit set, maximized
+   windows cover the bar). Restored to full screen on clean exit; the watchdog
+   re-asserts it if something resets the work area.
 4. Tracks top-level windows with `RegisterShellHookWindow` + the registered
-   `SHELLHOOK` message — documented and stable since Windows 2000 — plus a
-   slow `EnumWindows` polling fallback.
+   `SHELLHOOK` message — documented and stable since Windows 2000 — a WinEvent
+   hook (show/hide/destroy, debounced) for instant button updates, plus a slow
+   `EnumWindows` polling fallback.
 5. Captures bare Win-key taps with a `WH_KEYBOARD_LL` hook: the key-up is
    swallowed and replaced with synthetic input (dummy key between Win-down
    and Win-up) so Explorer's start menu never triggers; our menu opens

@@ -135,12 +135,14 @@ Gotchas when adding/maintaining a helper:
   that *should* get a button need a native icon: GDK's default is the generic
   GTK icon, so send `WM_SETICON` on the mapped HWND (`run-gtk/src/winicon.rs`,
   a port of `sysinfo::make_glyph_icon` — reuse it for new helpers).
-- **Resizable helpers must clamp maximize.** StartPE's taskbar does *not* reserve
-  the work area (`SPI_GETWORKAREA` is the full screen under StartPE), so a
-  maximizable window maximizes full-screen and the bar clips it. A resizable helper
-  must subclass its native HWND and clamp `WM_GETMINMAXINFO` to the work area minus
-  the `StartPE_Taskbar` strip — see `helpers/sysinfo-gtk/src/winfix.rs`. Fixed-size
-  helpers (run, settings) avoid this by being non-resizable.
+- **Resizable helpers should still clamp maximize.** Since v0.1.86 StartPE's
+  taskbar reserves its strip via `SPI_SETWORKAREA` (the ABM_SETPOS appbar
+  reservation is serviced by Explorer's tray, which StartPE hides and which is
+  broken on stripped PEs — so it never took effect and windows maximized behind
+  the bar). Maximize now lands above the bar system-wide. Keep the
+  `WM_GETMINMAXINFO` clamp in resizable helpers as defense-in-depth
+  (`helpers/sysinfo-gtk/src/winfix.rs` — it's a no-op when the work area is
+  right). Fixed-size helpers (run, settings) don't need it.
 - **Live config changes use a registered message, not a shared call.** A helper that
   changes `HKCU\Software\StartPE` and needs the *running* shell to react posts the
   registered `StartPE_ReloadConfig` message (`RegisterWindowMessageW`, same string

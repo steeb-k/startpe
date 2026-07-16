@@ -571,7 +571,46 @@ fn position_appbar(hwnd: HWND, height: i32) {
             abd.rc.bottom - abd.rc.top,
             true,
         );
+        // Reserve the taskbar strip in the work area ourselves. The ABM_SETPOS
+        // reservation above is serviced by Explorer's tray — which StartPE
+        // hides, and which is broken on the stripped PEs anyway — so
+        // SPI_GETWORKAREA stays full-screen and maximized windows would cover
+        // the bar. SPI_SETWORKAREA is the documented direct route; maximize
+        // (and the GTK helpers' own clamps) then land above the bar.
+        set_work_area(RECT {
+            left: 0,
+            top: 0,
+            right: sw,
+            bottom: abd.rc.top,
+        });
     }
+}
+
+/// Set the (primary-monitor) work area if it differs from `want`, broadcasting
+/// the change so windows maximized afterwards use it.
+unsafe fn set_work_area(mut want: RECT) {
+    let mut cur = RECT::default();
+    let ok = SystemParametersInfoW(
+        SPI_GETWORKAREA,
+        0,
+        Some(&mut cur as *mut _ as *mut core::ffi::c_void),
+        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+    )
+    .is_ok();
+    if ok
+        && cur.left == want.left
+        && cur.top == want.top
+        && cur.right == want.right
+        && cur.bottom == want.bottom
+    {
+        return;
+    }
+    let _ = SystemParametersInfoW(
+        SPI_SETWORKAREA,
+        0,
+        Some(&mut want as *mut _ as *mut core::ffi::c_void),
+        SPIF_SENDCHANGE,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1643,14 +1682,23 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     crate::tray::prune();
                     crate::tray::raise();
                     // If appbar negotiation left us off the bottom edge
-                    // (e.g. Explorer's reservation released late), re-dock.
+                    // (e.g. Explorer's reservation released late), or the
+                    // work-area reservation got reset (e.g. by an Explorer
+                    // restart), re-dock — position_appbar restores both.
                     let height = STATE.with_borrow(|s| {
                         s.as_ref().map(|s| scaled(s.cfg.taskbar_height)).unwrap_or(scaled(40))
                     });
                     let mut rc = RECT::default();
                     let _ = GetWindowRect(hwnd, &mut rc);
+                    let mut wa = RECT::default();
+                    let _ = SystemParametersInfoW(
+                        SPI_GETWORKAREA,
+                        0,
+                        Some(&mut wa as *mut _ as *mut core::ffi::c_void),
+                        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+                    );
                     let (_, sh) = screen_size();
-                    if rc.bottom != sh || rc.top != sh - height {
+                    if rc.bottom != sh || rc.top != sh - height || wa.bottom != sh - height {
                         position_appbar(hwnd, height);
                     }
                     STATE.with_borrow_mut(|s| {
@@ -1860,6 +1908,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 ..Default::default()
             };
             SHAppBarMessage(ABM_REMOVE, &mut abd);
+            // Give the reserved strip back (Explorer re-reserves its own once
+            // its taskbar leaves auto-hide below).
+            let (sw, sh) = screen_size();
+            set_work_area(RECT { left: 0, top: 0, right: sw, bottom: sh });
             show_explorer_taskbar();
             PostQuitMessage(0);
             LRESULT(0)
