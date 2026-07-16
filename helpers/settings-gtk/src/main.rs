@@ -9,6 +9,9 @@
 //! applies it live (`settings_io`).
 
 mod settings_io;
+// Duplicated verbatim across the GTK helpers; each uses a different subset.
+#[allow(dead_code)]
+mod winicon;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -126,6 +129,10 @@ fn build_ui(app: &adw::Application) {
         });
     }
     window.add_controller(keys);
+
+    // Swap GTK's default icon for the accent Settings gear (taskbar / Alt+Tab)
+    // once the native window exists.
+    window.connect_map(|_| winicon::apply_to_own_window("StartPE Settings", '\u{E713}'));
 
     window.present();
 }

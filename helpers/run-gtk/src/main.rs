@@ -13,6 +13,8 @@
 //! with `SetWindowPos` once it maps (the one place this helper reaches past GTK).
 
 mod run_exec;
+// Duplicated verbatim across the GTK helpers; each uses a different subset.
+#[allow(dead_code)]
 mod winicon;
 
 use adw::prelude::*;
@@ -203,8 +205,9 @@ fn browse_file(window: &adw::ApplicationWindow, entry: &Entry) {
 fn position_bottom_left() {
     unsafe {
         let Some(hwnd) = own_window() else { return };
-        // Swap GTK's default icon for the accent Run glyph (taskbar / Alt+Tab).
-        winicon::apply(hwnd);
+        // Swap GTK's default icon for the accent Run glyph (taskbar / Alt+Tab),
+        // the same glyph the GDI Run box uses.
+        winicon::apply(hwnd, '\u{E74C}');
         let mut wr = RECT::default();
         if GetWindowRect(hwnd, &mut wr).is_err() {
             return;

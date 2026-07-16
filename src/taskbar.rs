@@ -7,9 +7,12 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicIsize, Ordering};
 
 use windows::core::{w, Result, PCWSTR, PWSTR};
 use windows::Win32::Foundation::*;
+use windows::Win32::UI::Accessibility::HWINEVENTHOOK;
+use windows::Win32::UI::Accessibility::SetWinEventHook;
 use windows::Win32::Globalization::{
     GetDateFormatEx, GetTimeFormatEx, DATE_SHORTDATE, TIME_NOSECONDS,
 };
@@ -45,6 +48,12 @@ const TIMER_PEEK: usize = 3;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const TIMER_CLOCK: usize = 1;
 const TIMER_WATCHDOG: usize = 2;
+/// One-shot debounce for WinEvent-driven button refreshes (see `win_event_proc`).
+const TIMER_WINEVENT: usize = 4;
+
+/// Taskbar HWND for the WinEvent callback (it must not touch `STATE`: events
+/// are delivered while pumping messages, so a borrow could already be live).
+static WINEVENT_TASKBAR: AtomicIsize = AtomicIsize::new(0);
 
 // Colors are COLORREF values (0x00BBGGRR).
 pub const COL_BG: u32 = 0x00201F1F;
@@ -567,6 +576,28 @@ fn position_appbar(hwnd: HWND, height: i32) {
 
 // ---------------------------------------------------------------------------
 // Window enumeration
+
+/// WinEvent callback: a top-level window was destroyed, shown, or hidden.
+/// Coalesce bursts (a window creation fires many object events) into one
+/// refresh via a short one-shot timer. Must not touch `STATE`: out-of-context
+/// events are delivered while pumping messages, so a borrow may be live.
+unsafe extern "system" fn win_event_proc(
+    _hook: HWINEVENTHOOK,
+    _event: u32,
+    hwnd: HWND,
+    idobject: i32,
+    idchild: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    if idobject != OBJID_WINDOW.0 || idchild != 0 || hwnd.is_invalid() {
+        return;
+    }
+    let taskbar = HWND(WINEVENT_TASKBAR.load(Ordering::Relaxed) as *mut core::ffi::c_void);
+    if !taskbar.is_invalid() {
+        SetTimer(taskbar, TIMER_WINEVENT, 40, None);
+    }
+}
 
 fn is_task_window(hwnd: HWND, own: HWND) -> bool {
     unsafe {
@@ -1563,6 +1594,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             });
             register_appbar(hwnd, height);
             let _ = RegisterShellHookWindow(hwnd);
+            // The shell hook alone reacts noticeably late to new windows (and
+            // misses some transitions); a WinEvent hook for show/hide/destroy
+            // makes buttons appear the moment a window does. Out-of-context =
+            // delivered on this thread's message loop, documented API, and no
+            // DLL injection. The watchdog timer stays as the safety net.
+            WINEVENT_TASKBAR.store(hwnd.0 as isize, Ordering::Relaxed);
+            let _ = SetWinEventHook(
+                EVENT_OBJECT_DESTROY,
+                EVENT_OBJECT_HIDE, // contiguous range DESTROY..SHOW..HIDE
+                None,
+                Some(win_event_proc),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+            );
             SetTimer(hwnd, TIMER_CLOCK, 1000, None);
             SetTimer(hwnd, TIMER_WATCHDOG, 3000, None);
             STATE.with_borrow_mut(|s| refresh_buttons(s.as_mut().unwrap()));
@@ -1581,6 +1627,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     if let Some(Hit::Task(i)) = hover {
                         show_peek(i);
                     }
+                }
+                TIMER_WINEVENT => {
+                    // Debounced WinEvent burst: the window set changed.
+                    let _ = KillTimer(hwnd, TIMER_WINEVENT);
+                    STATE.with_borrow_mut(|s| {
+                        if let Some(s) = s.as_mut() {
+                            refresh_buttons(s);
+                        }
+                    });
+                    let _ = InvalidateRect(hwnd, None, false);
                 }
                 TIMER_WATCHDOG => {
                     // Re-hide Explorer's taskbar if it restarted, and catch

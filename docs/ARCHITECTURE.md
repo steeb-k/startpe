@@ -145,7 +145,9 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   `PrintWindow` screenshot), flowing left-to-right and wrapping into a grid once
   a row would pass ~85% of the screen width. No DWM dependency (static
   screenshots, not live thumbnails); releasing Alt / Enter / a click activates
-  the selection, Esc cancels
+  the selection, Esc cancels. Minimized windows can't be `PrintWindow`d, so a
+  `EVENT_SYSTEM_MINIMIZESTART` WinEvent snapshots each window as its minimize
+  begins and the switcher shows that cached thumbnail while it stays iconic
 - `src/border.rs` — accent window frame for the **no-DWM** path (plain PE).
   Opt-out `WindowBorders`, default on. A click-through, never-activated `WS_POPUP`
   overlay shaped to a thin ring by `SetWindowRgn`, kept positioned over the active

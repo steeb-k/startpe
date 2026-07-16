@@ -12,6 +12,9 @@
 
 mod sysinfo_data;
 mod winfix;
+// Duplicated verbatim across the GTK helpers; each uses a different subset.
+#[allow(dead_code)]
+mod winicon;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

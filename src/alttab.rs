@@ -18,6 +18,7 @@
 
 use core::ffi::c_void;
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 
 use windows::core::w;
 use windows::Win32::Foundation::*;
@@ -25,6 +26,7 @@ use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -83,6 +85,11 @@ thread_local! {
     /// the hook so it can decide open-vs-advance synchronously (posted messages
     /// are processed later, which would otherwise race into a double-open).
     static ENGAGED: Cell<bool> = const { Cell::new(false) };
+    /// Pre-minimize thumbnails keyed by HWND. `PrintWindow` can't capture a
+    /// minimized window, so we grab one at `EVENT_SYSTEM_MINIMIZESTART`, while
+    /// the window still renders, and the switcher uses it while iconic.
+    static MINI_CACHE: RefCell<HashMap<isize, (HBITMAP, i32, i32)>> =
+        RefCell::new(HashMap::new());
 }
 
 /// Create the (hidden) overlay window and install the Alt+Tab keyboard hook.
@@ -92,8 +99,79 @@ pub fn install() {
         // Hook callbacks arrive on this (installing) thread's message loop, so
         // the thread_locals above are safe to touch from inside the hook.
         let _ = SetWindowsHookExW(WH_KEYBOARD_LL, Some(kb_hook), None, 0);
+        // Capture a window the moment a minimize starts (documented WinEvent),
+        // feeding MINI_CACHE above.
+        let _ = SetWinEventHook(
+            EVENT_SYSTEM_MINIMIZESTART,
+            EVENT_SYSTEM_MINIMIZESTART,
+            None,
+            Some(minimize_event),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+        );
     }
     log_install();
+}
+
+/// WinEvent callback: a window began minimizing. Snapshot it now — by the time
+/// Alt+Tab wants a preview it will be iconic and uncapturable. Delivery is
+/// asynchronous, so occasionally the window is already iconic; then we just
+/// keep whatever the cache had (or nothing — the icon fallback still applies).
+unsafe extern "system" fn minimize_event(
+    _hook: HWINEVENTHOOK,
+    _event: u32,
+    hwnd: HWND,
+    idobject: i32,
+    idchild: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    if idobject != OBJID_WINDOW.0 || idchild != 0 || hwnd.is_invalid() || !eligible(hwnd) {
+        return;
+    }
+    // Capture first (it pumps messages), then swap into the cache.
+    if let Some((bmp, w, h)) = capture(hwnd) {
+        let old = MINI_CACHE.with_borrow_mut(|c| c.insert(hwnd.0 as isize, (bmp, w, h)));
+        if let Some((b, _, _)) = old {
+            let _ = DeleteObject(HGDIOBJ(b.0));
+        }
+    }
+}
+
+/// Drop cache entries whose window is gone.
+fn prune_mini_cache() {
+    MINI_CACHE.with_borrow_mut(|c| {
+        c.retain(|&h, &mut (bmp, _, _)| unsafe {
+            let alive = IsWindow(HWND(h as *mut c_void)).as_bool();
+            if !alive {
+                let _ = DeleteObject(HGDIOBJ(bmp.0));
+            }
+            alive
+        });
+    });
+}
+
+/// A copy of the cached pre-minimize thumbnail for `hwnd`, if any. The copy is
+/// owned by the caller (entries free their shots on close; the cache keeps its
+/// own bitmap for the next open).
+unsafe fn cached_shot(hwnd: HWND) -> Option<(HBITMAP, i32, i32)> {
+    MINI_CACHE.with_borrow(|c| {
+        let &(bmp, w, h) = c.get(&(hwnd.0 as isize))?;
+        let screen = GetDC(None);
+        let src = CreateCompatibleDC(screen);
+        let dst = CreateCompatibleDC(screen);
+        let copy = CreateCompatibleBitmap(screen, w, h);
+        let old_src = SelectObject(src, HGDIOBJ(bmp.0));
+        let old_dst = SelectObject(dst, HGDIOBJ(copy.0));
+        let _ = BitBlt(dst, 0, 0, w, h, src, 0, 0, SRCCOPY);
+        SelectObject(src, old_src);
+        SelectObject(dst, old_dst);
+        let _ = DeleteDC(src);
+        let _ = DeleteDC(dst);
+        ReleaseDC(None, screen);
+        Some((copy, w, h))
+    })
 }
 
 fn log_install() {
@@ -321,6 +399,12 @@ unsafe fn capture(hwnd: HWND) -> Option<(HBITMAP, i32, i32)> {
     let src = CreateCompatibleDC(screen);
     let full = CreateCompatibleBitmap(screen, w, h);
     let old_src = SelectObject(src, HGDIOBJ(full.0));
+    // A fresh compatible bitmap holds undefined memory (often recycled VRAM
+    // that looks like random screen fragments), and PrintWindow can succeed
+    // while rendering only part of the surface — pre-fill so any uncovered
+    // area degrades to the panel background instead of garbage.
+    let bg = RECT { left: 0, top: 0, right: w, bottom: h };
+    fill(src, &bg, COL_BG);
     let ok = PrintWindow(hwnd, src, PRINT_WINDOW_FLAGS(PW_RENDERFULLCONTENT)).as_bool();
 
     let result = if ok {
@@ -352,6 +436,7 @@ unsafe fn capture(hwnd: HWND) -> Option<(HBITMAP, i32, i32)> {
 }
 
 fn collect_entries() -> Vec<Entry> {
+    prune_mini_cache();
     unsafe {
         let mut hwnds: Vec<HWND> = Vec::new();
         // EnumWindows yields top-to-bottom Z order, so the current window is
@@ -360,7 +445,14 @@ fn collect_entries() -> Vec<Entry> {
         hwnds
             .into_iter()
             .map(|hwnd| {
-                let (shot, shot_w, shot_h) = match capture(hwnd) {
+                // Live capture; minimized windows fall back to the thumbnail
+                // cached when their minimize started, then to the icon.
+                let shot = if IsIconic(hwnd).as_bool() {
+                    cached_shot(hwnd)
+                } else {
+                    capture(hwnd)
+                };
+                let (shot, shot_w, shot_h) = match shot {
                     Some((b, w, h)) => (Some(b), w, h),
                     None => (None, 0, 0),
                 };
@@ -830,6 +922,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
             LRESULT(0)
         }
+        WM_ERASEBKGND => LRESULT(1), // WM_PAINT covers the full panel
         WM_PAINT => {
             AT.with_borrow(|a| {
                 if let Some(a) = a.as_ref() {

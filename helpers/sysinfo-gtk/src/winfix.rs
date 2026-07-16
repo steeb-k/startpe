@@ -31,6 +31,9 @@ pub fn constrain_maximize(window: &adw::ApplicationWindow) {
     window.connect_map(|_| unsafe {
         if let Some(hwnd) = own_window() {
             let _ = SetWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID, 0);
+            // While we hold the native HWND: swap GTK's default icon for the
+            // accent Info glyph (matches the GDI System Information window).
+            crate::winicon::apply(hwnd, '\u{E946}');
         }
     });
 }

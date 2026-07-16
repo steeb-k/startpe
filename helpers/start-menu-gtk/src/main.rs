@@ -44,6 +44,7 @@ const CSS: &str = "
 .sm-list { background: transparent; }
 .sm-list row { border-radius: 8px; }
 .sm-rightbtn { padding: 8px 10px; }
+.sm-pinned-label { font-size: 1.15em; }
 ";
 
 #[derive(Clone)]
@@ -76,12 +77,14 @@ fn build_ui(app: &adw::Application) {
     );
 
     let stack: Rc<RefCell<Vec<PathBuf>>> = Rc::new(RefCell::new(Vec::new()));
-    let actions: Rc<RefCell<Vec<RowAction>>> = Rc::new(RefCell::new(Vec::new()));
+    let actions_pinned: Rc<RefCell<Vec<RowAction>>> = Rc::new(RefCell::new(Vec::new()));
+    let actions_browse: Rc<RefCell<Vec<RowAction>>> = Rc::new(RefCell::new(Vec::new()));
     let shown = Rc::new(Cell::new(false));
     let shown_at = Rc::new(Cell::new(Instant::now()));
     let showing_all = Rc::new(Cell::new(false));
 
-    // --- Left pane: app list, an All apps / Pinned toggle, then search (bottom). ---
+    // --- Left pane: pinned/browse pages in a sliding stack, an All apps / Back
+    // toggle, then search (bottom). ---
     let search = SearchEntry::new();
     search.set_placeholder_text(Some("Search programs"));
     search.set_margin_top(8);
@@ -89,68 +92,108 @@ fn build_ui(app: &adw::Application) {
     search.set_margin_start(8);
     search.set_margin_end(8);
 
-    let list = ListBox::new();
-    list.set_selection_mode(SelectionMode::None);
-    list.add_css_class("sm-list");
-    list.set_margin_start(6);
-    list.set_margin_end(6);
+    // Two list pages — "pinned" (the root pinned view) and "browse" (all apps,
+    // folder drill-down, search results) — so switching can slide: browse in
+    // from the right, pinned back in from the left.
+    let make_list = || {
+        let list = ListBox::new();
+        list.set_selection_mode(SelectionMode::None);
+        list.add_css_class("sm-list");
+        list.set_margin_start(6);
+        list.set_margin_end(6);
+        let scroll = ScrolledWindow::new();
+        scroll.set_hscrollbar_policy(PolicyType::Never);
+        scroll.set_vexpand(true);
+        scroll.set_child(Some(&list));
+        (list, scroll)
+    };
+    let (pinned_list, pinned_scroll) = make_list();
+    let (browse_list, browse_scroll) = make_list();
+    let view_stack = gtk::Stack::new();
+    view_stack.set_vexpand(true);
+    view_stack.set_transition_duration(200);
+    view_stack.add_named(&pinned_scroll, Some("pinned"));
+    view_stack.add_named(&browse_scroll, Some("browse"));
 
-    let list_scroll = ScrolledWindow::new();
-    list_scroll.set_hscrollbar_policy(PolicyType::Never);
-    list_scroll.set_vexpand(true);
-    list_scroll.set_child(Some(&list));
-
-    // "All apps" / "Pinned apps" toggle — only shown when start-menu pins exist.
+    // "All apps ›" / "‹ Back" toggle — only shown when start-menu pins exist.
     let has_pins = appsource::has_pins();
-    let all_apps = Button::with_label("All apps");
+    let all_apps = Button::new();
     all_apps.add_css_class("flat");
     all_apps.set_margin_start(8);
     all_apps.set_margin_end(8);
-    if let Some(lbl) = all_apps.child().and_downcast::<Label>() {
-        lbl.set_xalign(0.0);
-    }
+    all_apps.set_child(Some(&toggle_face(false)));
 
     let refresh: Rc<dyn Fn()> = {
-        let (list, stack, search, actions, showing_all, all_apps) = (
-            list.clone(),
+        let (stack, search, showing_all, all_apps, shown, view_stack) = (
             stack.clone(),
             search.clone(),
-            actions.clone(),
             showing_all.clone(),
             all_apps.clone(),
+            shown.clone(),
+            view_stack.clone(),
         );
+        let (pinned_list, browse_list) = (pinned_list.clone(), browse_list.clone());
+        let (actions_pinned, actions_browse) = (actions_pinned.clone(), actions_browse.clone());
         Rc::new(move || {
+            let query = search.text();
+            // The pinned page shows only the root pinned view; anything else
+            // (All apps, a folder, a search) lives on the browse page.
+            let browse = showing_all.get()
+                || !query.trim().is_empty()
+                || !stack.borrow().is_empty()
+                || !has_pins;
+            let (list, actions) = if browse {
+                (&browse_list, &actions_browse)
+            } else {
+                (&pinned_list, &actions_pinned)
+            };
             while let Some(child) = list.first_child() {
                 list.remove(&child);
             }
-            let items = appsource::enumerate(&stack.borrow(), &search.text(), showing_all.get());
+            let items = appsource::enumerate(&stack.borrow(), &query, showing_all.get());
             let mut acts = Vec::with_capacity(items.len());
             for item in items {
-                let (row, action) = make_row(item);
+                let (row, action) = make_row(item, !browse);
                 list.append(&row);
                 acts.push(action);
             }
             *actions.borrow_mut() = acts;
-            all_apps.set_label(if showing_all.get() {
-                "Pinned apps"
-            } else {
-                "All apps"
-            });
+            all_apps.set_child(Some(&toggle_face(showing_all.get())));
+
+            let target = if browse { "browse" } else { "pinned" };
+            if view_stack.visible_child_name().as_deref() != Some(target) {
+                // No animation while hidden (menu open resets to the root).
+                view_stack.set_transition_type(if !shown.get() {
+                    gtk::StackTransitionType::None
+                } else if browse {
+                    gtk::StackTransitionType::SlideLeft
+                } else {
+                    gtk::StackTransitionType::SlideRight
+                });
+                view_stack.set_visible_child_name(target);
+            }
         })
     };
     {
-        let (showing_all, refresh) = (showing_all.clone(), refresh.clone());
+        let (showing_all, stack, search, refresh) = (
+            showing_all.clone(),
+            stack.clone(),
+            search.clone(),
+            refresh.clone(),
+        );
         all_apps.connect_clicked(move |_| {
+            // Both directions land on a root view with a clean search.
             showing_all.set(!showing_all.get());
+            stack.borrow_mut().clear();
+            search.set_text("");
             refresh();
         });
     }
 
     let left = GtkBox::new(Orientation::Vertical, 0);
     left.set_hexpand(true);
-    left.append(&list_scroll);
+    left.append(&view_stack);
     if has_pins {
-        left.append(&Separator::new(Orientation::Horizontal));
         left.append(&all_apps);
     }
     left.append(&search);
@@ -189,10 +232,18 @@ fn build_ui(app: &adw::Application) {
     panes.append(&right);
     window.set_content(Some(&panes));
 
-    // Row activation.
-    {
-        let (stack, actions, search, refresh, hide) =
-            (stack.clone(), actions.clone(), search.clone(), refresh.clone(), hide.clone());
+    // Row activation (same handling on both pages, each with its own actions).
+    for (list, actions) in [
+        (&pinned_list, &actions_pinned),
+        (&browse_list, &actions_browse),
+    ] {
+        let (stack, actions, search, refresh, hide) = (
+            stack.clone(),
+            actions.clone(),
+            search.clone(),
+            refresh.clone(),
+            hide.clone(),
+        );
         list.connect_row_activated(move |_, row| {
             let idx = row.index();
             if idx < 0 {
@@ -290,11 +341,30 @@ fn hide_menu(ui: &Ui) {
     ui.shown.set(false);
 }
 
-/// Build a list row + its action from an [`AppItem`].
-fn make_row(item: AppItem) -> (ListBoxRow, RowAction) {
+/// Face of the All apps / Back toggle: "All apps ›" in the pinned view,
+/// "‹ Back" in the all-apps view.
+fn toggle_face(showing_all: bool) -> GtkBox {
+    let row = GtkBox::new(Orientation::Horizontal, 6);
+    let label = Label::new(Some(if showing_all { "Back" } else { "All apps" }));
+    label.set_xalign(0.0);
+    label.set_hexpand(true);
+    if showing_all {
+        row.append(&Image::from_icon_name("go-previous-symbolic"));
+        row.append(&label);
+    } else {
+        row.append(&label);
+        row.append(&Image::from_icon_name("go-next-symbolic"));
+    }
+    row
+}
+
+/// Build a list row + its action from an [`AppItem`]. `large` rows (the pinned
+/// view) get 32px icons and bigger text, older-Windows start-menu style.
+fn make_row(item: AppItem, large: bool) -> (ListBoxRow, RowAction) {
     let row_box = GtkBox::new(Orientation::Horizontal, 10);
-    row_box.set_margin_top(4);
-    row_box.set_margin_bottom(4);
+    let v = if large { 6 } else { 4 };
+    row_box.set_margin_top(v);
+    row_box.set_margin_bottom(v);
     row_box.set_margin_start(8);
     row_box.set_margin_end(8);
 
@@ -306,13 +376,16 @@ fn make_row(item: AppItem) -> (ListBoxRow, RowAction) {
             ItemKind::Launch(_) => Image::from_icon_name("application-x-executable-symbolic"),
         },
     };
-    image.set_pixel_size(24);
+    image.set_pixel_size(if large { 32 } else { 24 });
     row_box.append(&image);
 
     let label = Label::new(Some(&item.name));
     label.set_xalign(0.0);
     label.set_hexpand(true);
     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    if large {
+        label.add_css_class("sm-pinned-label");
+    }
     row_box.append(&label);
 
     if matches!(item.kind, ItemKind::Folder(_)) {
@@ -393,7 +466,6 @@ fn build_right_pane(hide: Rc<dyn Fn()>) -> GtkBox {
         });
     }
     right.append(&header);
-    right.append(&Separator::new(Orientation::Horizontal));
 
     for (icon, label, target) in right_links() {
         let b = link_button(icon, &label);
@@ -405,6 +477,11 @@ fn build_right_pane(hide: Rc<dyn Fn()>) -> GtkBox {
         right.append(&b);
     }
 
+    let spacer = GtkBox::new(Orientation::Vertical, 0);
+    spacer.set_vexpand(true);
+    right.append(&spacer);
+
+    // Run sits at the bottom, directly above Power.
     let run_btn = link_button("system-run-symbolic", "Run\u{2026}");
     {
         let hide = hide.clone();
@@ -415,11 +492,6 @@ fn build_right_pane(hide: Rc<dyn Fn()>) -> GtkBox {
     }
     right.append(&run_btn);
 
-    let spacer = GtkBox::new(Orientation::Vertical, 0);
-    spacer.set_vexpand(true);
-    right.append(&spacer);
-
-    right.append(&Separator::new(Orientation::Horizontal));
     right.append(&power_button(hide));
     right
 }
