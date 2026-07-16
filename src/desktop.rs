@@ -27,9 +27,13 @@ use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW
 use windows::Win32::System::Ole::{IOleWindow_Impl, OleInitialize, OLEMENUGROUPWIDTHS};
 use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::UI::Controls::{
-    LVHITTESTINFO, LVITEMW, LIST_VIEW_ITEM_STATE_FLAGS, LVIS_FOCUSED, LVIS_SELECTED, TBBUTTON,
+    ImageList_BeginDrag, ImageList_Destroy, ImageList_DragEnter, ImageList_DragLeave,
+    ImageList_DragMove, ImageList_EndDrag, HIMAGELIST, LVHITTESTINFO, LVITEMW,
+    LIST_VIEW_ITEM_STATE_FLAGS, LVIS_FOCUSED, LVIS_SELECTED, TBBUTTON,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, VK_RETURN};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetFocus, GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_RETURN,
+};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
     DefSubclassProc, IFolderView2, IShellBrowser, IShellBrowser_Impl, IShellFolder, IShellView,
@@ -148,6 +152,36 @@ pub fn create_if_needed(cfg: &Config) -> bool {
             Ok(()) => true,
             Err(_) => false,
         }
+    }
+}
+
+/// Give the hosted shell view first crack at keyboard messages while focus is
+/// inside it — the documented `IShellBrowser`-host contract (Explorer's desktop
+/// does the same). This is what makes Delete, F2, F5, Ctrl+C/X/V/A work on the
+/// desktop. Returns `true` when the view consumed the message (the caller must
+/// then skip `TranslateMessage`/`DispatchMessageW`).
+pub fn translate_accelerator(msg: &MSG) -> bool {
+    if !(WM_KEYFIRST..=WM_KEYLAST).contains(&msg.message) {
+        return false;
+    }
+    // Resolve under the borrow, act after: the accelerator can run a full file
+    // operation (delete confirmation etc.) that pumps messages.
+    let (view, view_hwnd) = DESKTOP.with_borrow(|d| match d {
+        Some(d) => (d._view.clone(), d.view_hwnd),
+        None => (None, HWND::default()),
+    });
+    let (Some(view), false) = (view, view_hwnd.is_invalid()) else {
+        return false;
+    };
+    unsafe {
+        let focus = GetFocus();
+        if focus.is_invalid() || (focus != view_hwnd && !IsChild(view_hwnd, focus).as_bool()) {
+            return false;
+        }
+        // Raw vtable call: we must distinguish S_OK (consumed) from S_FALSE
+        // (not consumed), which the generated `Result<()>` wrapper collapses.
+        let hr = (Interface::vtable(&view).TranslateAccelerator)(Interface::as_raw(&view), msg);
+        hr == S_OK
     }
 }
 
@@ -364,22 +398,33 @@ unsafe fn configure_view_flags(view: &IShellView) {
 const TIMER_LAYOUT: usize = 1;
 
 const LVM_GETITEMCOUNT: u32 = 0x1004;
+const LVM_GETNEXTITEM: u32 = 0x100C;
 const LVM_SETITEMPOSITION: u32 = 0x100F;
 const LVM_GETITEMPOSITION: u32 = 0x1010;
 const LVM_HITTEST: u32 = 0x1012;
+const LVM_CREATEDRAGIMAGE: u32 = 0x1021;
 const LVM_SETITEMSTATE: u32 = 0x102B;
+const LVM_GETITEMSTATE: u32 = 0x102C;
 const LVM_GETITEMSPACING: u32 = 0x1033;
 const LVM_GETITEMTEXTW: u32 = 0x1073;
+const LVNI_SELECTED: usize = 0x0002;
 
 /// Drag-to-reposition state for the subclassed desktop list. The defview's OLE
 /// drag rejects intra-view drops, so we move icons ourselves: swallow the item
-/// drag (preventing the defview's drag) and set the item position directly.
+/// drag (preventing the defview's drag), show a ghost drag image following the
+/// cursor (`ImageList_BeginDrag`, like the real desktop — the icons themselves
+/// stay put), and set the item positions on drop.
 struct DragState {
     tracking: bool,
     dragging: bool,
     item: i32,
     down: POINT,
     item_start: POINT,
+    /// The ghost drag image (from `LVM_CREATEDRAGIMAGE`); 0 while not dragging.
+    himl: HIMAGELIST,
+    /// Items moving together (the selection, when the pressed item was part of
+    /// it) with their positions at drag start. First entry is the pressed item.
+    group: Vec<(i32, POINT)>,
     last_click_item: i32,
     last_click_ms: u32,
 }
@@ -392,6 +437,8 @@ thread_local! {
             item: -1,
             down: POINT { x: 0, y: 0 },
             item_start: POINT { x: 0, y: 0 },
+            himl: HIMAGELIST(0),
+            group: Vec::new(),
             last_click_item: -1,
             last_click_ms: 0,
         })
@@ -428,11 +475,90 @@ unsafe fn lv_select_only(lv: HWND, item: i32) {
     SendMessageW(lv, LVM_SETITEMSTATE, WPARAM(item as usize), LPARAM(&mut set as *mut _ as isize));
 }
 
+unsafe fn lv_is_selected(lv: HWND, item: i32) -> bool {
+    let state = SendMessageW(
+        lv,
+        LVM_GETITEMSTATE,
+        WPARAM(item as usize),
+        LPARAM(LVIS_SELECTED.0 as isize),
+    )
+    .0 as u32;
+    state & LVIS_SELECTED.0 != 0
+}
+
+/// Set (or clear) just `item`'s selected bit, leaving the rest of the selection.
+unsafe fn lv_set_selected(lv: HWND, item: i32, on: bool) {
+    let mut it = LVITEMW {
+        stateMask: LVIS_SELECTED,
+        state: if on { LVIS_SELECTED } else { LIST_VIEW_ITEM_STATE_FLAGS(0) },
+        ..Default::default()
+    };
+    SendMessageW(lv, LVM_SETITEMSTATE, WPARAM(item as usize), LPARAM(&mut it as *mut _ as isize));
+}
+
+/// All selected items with their current positions.
+unsafe fn lv_selected_items(lv: HWND) -> Vec<(i32, POINT)> {
+    let mut out = Vec::new();
+    let mut i = -1i32;
+    loop {
+        i = SendMessageW(
+            lv,
+            LVM_GETNEXTITEM,
+            WPARAM(i as usize),
+            LPARAM(LVNI_SELECTED as isize),
+        )
+        .0 as i32;
+        if i < 0 {
+            break;
+        }
+        let (x, y) = list_item_pos(lv, i);
+        out.push((i, POINT { x, y }));
+    }
+    out
+}
+
+fn ctrl_down() -> bool {
+    unsafe { GetKeyState(VK_CONTROL.0 as i32) < 0 }
+}
+
+/// Start the ghost drag: build the drag image for the pressed item and anchor it
+/// at the cursor. Best-effort — without an image the drag still repositions on
+/// drop, there's just no ghost.
+unsafe fn ghost_begin(lv: HWND, item: i32, cursor: POINT) -> HIMAGELIST {
+    let mut ul = POINT::default();
+    let himl = HIMAGELIST(
+        SendMessageW(
+            lv,
+            LVM_CREATEDRAGIMAGE,
+            WPARAM(item as usize),
+            LPARAM(&mut ul as *mut _ as isize),
+        )
+        .0,
+    );
+    if himl.is_invalid() {
+        return HIMAGELIST(0);
+    }
+    let _ = ImageList_BeginDrag(himl, 0, cursor.x - ul.x, cursor.y - ul.y);
+    let _ = ImageList_DragEnter(lv, cursor.x, cursor.y);
+    himl
+}
+
+/// Tear down the ghost drag image (no-op when there is none).
+unsafe fn ghost_end(lv: HWND, himl: HIMAGELIST) {
+    if himl.is_invalid() {
+        return;
+    }
+    let _ = ImageList_DragLeave(lv);
+    ImageList_EndDrag();
+    let _ = ImageList_Destroy(himl);
+}
+
 /// Subclass proc on the desktop `SysListView32`. The defview's OLE drag rejects
 /// intra-view icon repositioning, and the list's default left-button handler
 /// runs a modal drag-detect that we can't intercept — so we take over the left
-/// button entirely: drag = reposition (snapped on drop), click = select,
-/// double-click = open (Enter). Right-click/context menu pass through.
+/// button entirely: drag = ghost image following the cursor, icons repositioned
+/// (snapped) on drop; click = select (Ctrl toggles); double-click = open
+/// (Enter). Right-click/context menu pass through.
 unsafe extern "system" fn list_subclass(
     hwnd: HWND,
     msg: u32,
@@ -453,6 +579,15 @@ unsafe extern "system" fn list_subclass(
                 DRAG.with_borrow_mut(|d| d.tracking = false);
                 return DefSubclassProc(hwnd, msg, wp, lp); // empty area: rubber-band
             }
+            // We bypass the list's default handler, which would otherwise take
+            // focus — take it ourselves so desktop keyboard shortcuts work.
+            let _ = SetFocus(hwnd);
+            // Windows-like press selection: an unselected item becomes the only
+            // selection right away; a selected one keeps the whole selection
+            // (so it can be dragged as a group). Ctrl defers to the click.
+            if !ctrl_down() && !lv_is_selected(hwnd, item) {
+                lv_select_only(hwnd, item);
+            }
             let mut ip = POINT::default();
             SendMessageW(
                 hwnd,
@@ -471,31 +606,54 @@ unsafe extern "system" fn list_subclass(
             LRESULT(0) // don't let the list's modal drag-detect run
         }
         WM_MOUSEMOVE => {
-            let repos = DRAG.with_borrow_mut(|d| {
+            enum Move {
+                Pass,
+                Hold,
+                Begin(i32, POINT),
+                Ghost,
+            }
+            let pt = POINT {
+                x: util::loword(lp.0),
+                y: util::hiword(lp.0),
+            };
+            // Resolve under the borrow, act after: the image-list calls and
+            // selection queries send messages back into this window.
+            let act = DRAG.with_borrow_mut(|d| {
                 if !d.tracking || wp.0 & MK_LBUTTON == 0 {
-                    return None;
+                    return Move::Pass;
                 }
-                let (cx, cy) = (util::loword(lp.0), util::hiword(lp.0));
-                if !d.dragging {
-                    let th = GetSystemMetrics(SM_CXDRAG).max(2);
-                    if (cx - d.down.x).abs() >= th || (cy - d.down.y).abs() >= th {
-                        d.dragging = true;
-                    }
+                if d.dragging {
+                    return Move::Ghost;
                 }
-                Some(if d.dragging {
-                    (d.item, d.item_start.x + (cx - d.down.x), d.item_start.y + (cy - d.down.y))
+                let th = GetSystemMetrics(SM_CXDRAG).max(2);
+                if (pt.x - d.down.x).abs() >= th || (pt.y - d.down.y).abs() >= th {
+                    d.dragging = true;
+                    Move::Begin(d.item, d.item_start)
                 } else {
-                    (-1, 0, 0)
-                })
+                    Move::Hold
+                }
             });
-            match repos {
-                Some((item, nx, ny)) => {
-                    if item >= 0 {
-                        set_item_pos(hwnd, item, nx, ny);
-                    }
+            match act {
+                Move::Pass => DefSubclassProc(hwnd, msg, wp, lp),
+                Move::Hold => LRESULT(0),
+                Move::Begin(item, start) => {
+                    // Dragging a selected item moves the whole selection.
+                    let group = if lv_is_selected(hwnd, item) {
+                        lv_selected_items(hwnd)
+                    } else {
+                        vec![(item, start)]
+                    };
+                    let himl = ghost_begin(hwnd, item, pt);
+                    DRAG.with_borrow_mut(|d| {
+                        d.group = group;
+                        d.himl = himl;
+                    });
                     LRESULT(0)
                 }
-                None => DefSubclassProc(hwnd, msg, wp, lp),
+                Move::Ghost => {
+                    let _ = ImageList_DragMove(pt.x, pt.y);
+                    LRESULT(0)
+                }
             }
         }
         WM_LBUTTONUP => {
@@ -517,12 +675,36 @@ unsafe extern "system" fn list_subclass(
                 Act::Pass => DefSubclassProc(hwnd, msg, wp, lp),
                 Act::Drop(item, nx, ny) => {
                     let _ = ReleaseCapture();
+                    let (himl, group, start) = DRAG.with_borrow_mut(|d| {
+                        (
+                            std::mem::replace(&mut d.himl, HIMAGELIST(0)),
+                            std::mem::take(&mut d.group),
+                            d.item_start,
+                        )
+                    });
+                    ghost_end(hwnd, himl);
+                    // Icons stayed put during the drag; place them now, all
+                    // shifted by the (snapped) distance the anchor moved.
                     let (sx, sy) = snap_to_grid(hwnd, nx, ny);
-                    set_item_pos(hwnd, item, sx, sy);
+                    if group.len() > 1 {
+                        let (dx, dy) = (sx - start.x, sy - start.y);
+                        for (i, p) in group {
+                            set_item_pos(hwnd, i, p.x + dx, p.y + dy);
+                        }
+                    } else {
+                        set_item_pos(hwnd, item, sx, sy);
+                    }
                     LRESULT(0)
                 }
                 Act::Click(item) => {
                     let _ = ReleaseCapture();
+                    if ctrl_down() {
+                        // Ctrl+click: toggle membership, never opens.
+                        let on = !lv_is_selected(hwnd, item);
+                        lv_set_selected(hwnd, item, on);
+                        DRAG.with_borrow_mut(|d| d.last_click_item = -1);
+                        return LRESULT(0);
+                    }
                     lv_select_only(hwnd, item);
                     const DBLCLK_MS: u32 = 500;
                     let now = GetTickCount();
@@ -543,10 +725,13 @@ unsafe extern "system" fn list_subclass(
             }
         }
         WM_CAPTURECHANGED => {
-            DRAG.with_borrow_mut(|d| {
+            let himl = DRAG.with_borrow_mut(|d| {
                 d.tracking = false;
                 d.dragging = false;
+                d.group.clear();
+                std::mem::replace(&mut d.himl, HIMAGELIST(0))
             });
+            ghost_end(hwnd, himl);
             DefSubclassProc(hwnd, msg, wp, lp)
         }
         _ => DefSubclassProc(hwnd, msg, wp, lp),

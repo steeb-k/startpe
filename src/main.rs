@@ -226,6 +226,11 @@ fn main() -> windows::core::Result<()> {
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            // Keyboard first goes to the hosted desktop view when it has focus
+            // (Delete, F2, Ctrl+C/X/V… — the IShellBrowser-host contract).
+            if desktop::translate_accelerator(&msg) {
+                continue;
+            }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }

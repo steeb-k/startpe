@@ -55,6 +55,16 @@ updated when behavior or config values change.
   `CreateFontW` takes raw u32s, `GetLocalTime()` returns by value,
   `HTHUMBNAIL` is `isize`, optional PCWSTR params want `PCWSTR::null()` not
   `Option`). Check existing call sites before writing new FFI.
+- The hosted desktop (`desktop.rs`) has two easy-to-lose invariants: (1) the
+  main message loop must offer key messages to the view's
+  `IShellView::TranslateAccelerator` while focus is inside it — that is the
+  documented IShellBrowser-host contract and the *only* thing that makes
+  Delete/F2/Ctrl+C/V work (raw vtable call, because windows-rs collapses the
+  S_OK/S_FALSE distinction the return value carries); (2) the icon-list
+  subclass swallows the left button, so it must `SetFocus` the list itself or
+  keyboard input never reaches the desktop. Icon dragging is a ghost drag
+  (`LVM_CREATEDRAGIMAGE` + `ImageList_BeginDrag/DragMove`), items repositioned
+  only on drop — don't "simplify" it back to live `LVM_SETITEMPOSITION` moves.
 - Per-window state lives in `thread_local!` `RefCell`s (single UI thread).
   **The borrow rule:** inside a wndproc, *resolve* what to do while holding
   the borrow, then drop it and *act* — `ShellExecuteW`, `SetForegroundWindow`,
@@ -105,7 +115,21 @@ them as siblings and the built-in GDI windows remain the fallback (so the main
 binary never depends on the GTK runtime). Keep `startpe.exe` itself free of any
 GTK/runtime dependency.
 
-Two gotchas when adding/maintaining a helper:
+Gotchas when adding/maintaining a helper:
+- **No local GTK toolchain on this machine.** The helpers build only in CI
+  (`helpers-gtk` matrix job, MSYS2 ucrt64 + gtk4/libadwaita); `C:\gtk-msys2-x64`
+  is just the shipped runtime prefix, with no compiler or pkg-config. To verify
+  helper changes locally, keep Win32-only logic in toolkit-free modules (e.g.
+  `appsource.rs`, `winicon.rs` import no GTK) and `cargo check` them in a scratch
+  crate with the same `windows` features. Final exes come from CI.
+- **GTK windows and StartPE's own taskbar/Alt+Tab.** All GTK4 toplevels share
+  one window class, and GDK caches ex-style bits — a `WS_EX_TOOLWINDOW` set from
+  the helper can race the taskbar's enumeration or be rewritten by GDK. A helper
+  window that must never get a task button is excluded *in StartPE* by its exact
+  window title (see `is_task_window` in `taskbar.rs`, "StartPE Menu"). Windows
+  that *should* get a button need a native icon: GDK's default is the generic
+  GTK icon, so send `WM_SETICON` on the mapped HWND (`run-gtk/src/winicon.rs`,
+  a port of `sysinfo::make_glyph_icon` — reuse it for new helpers).
 - **Resizable helpers must clamp maximize.** StartPE's taskbar does *not* reserve
   the work area (`SPI_GETWORKAREA` is the full screen under StartPE), so a
   maximizable window maximizes full-screen and the bar clips it. A resizable helper

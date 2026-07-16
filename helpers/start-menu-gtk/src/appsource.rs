@@ -6,11 +6,18 @@
 //! `ShellExecuteW`. The GTK UI turns these into rows; `HICON` → texture conversion
 //! lives in the UI layer (`icons.rs`).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
-use windows::core::PCWSTR;
+use windows::core::{Interface, PCWSTR};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER,
+    COINIT_APARTMENTTHREADED, STGM_READ,
+};
 use windows::Win32::UI::Shell::{
-    SHGetFileInfoW, ShellExecuteW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON,
+    IShellLinkW, SHGetFileInfoW, ShellExecuteW, ShellLink, SHFILEINFOW, SHGFI_ICON,
+    SHGFI_LARGEICON,
 };
 use windows::Win32::UI::WindowsAndMessaging::{HICON, SW_SHOWNORMAL};
 
@@ -168,11 +175,7 @@ pub fn enumerate(stack: &[PathBuf], query: &str, showing_all: bool) -> Vec<AppIt
             sort_items(&mut items);
         } else {
             for p in pins {
-                let name = p
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_string();
+                let name = pin_display_name(&p);
                 items.push(AppItem {
                     kind: ItemKind::Launch(p),
                     name,
@@ -190,6 +193,153 @@ pub fn enumerate(stack: &[PathBuf], query: &str, showing_all: bool) -> Vec<AppIt
 /// and an "All apps" toggle).
 pub fn has_pins() -> bool {
     !start_menu_pins().is_empty()
+}
+
+/// Friendly name for a pinned program path. Pins are exe paths (see
+/// `start_menu_pins`), so the raw file stem reads like "7zFM". Prefer the name
+/// the app is listed under in the Start Menu (its `.lnk` stem — what the
+/// "All apps" view shows), then the exe's version-resource description, then
+/// the stem.
+fn pin_display_name(path: &Path) -> String {
+    let key = path.to_string_lossy().to_lowercase();
+    if let Some(name) = lnk_names_by_target().get(&key) {
+        return name.clone();
+    }
+    let path_str = path.to_string_lossy();
+    version_string(&path_str, "FileDescription")
+        .or_else(|| version_string(&path_str, "ProductName"))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string()
+        })
+}
+
+/// Map of shortcut target (lowercased full path) → shortcut stem, built once
+/// from every `.lnk` under the Start Menu roots. First hit wins, common (all
+/// users) root first — same precedence the list view shows.
+fn lnk_names_by_target() -> &'static HashMap<String, String> {
+    static MAP: OnceLock<HashMap<String, String>> = OnceLock::new();
+    MAP.get_or_init(|| {
+        // The GTK main thread has no COM guarantee; initialize best-effort
+        // (an already-initialized thread returns S_FALSE/RPC_E_CHANGED_MODE,
+        // both fine for CoCreateInstance below).
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+        let mut map = HashMap::new();
+        for root in start_menu_roots() {
+            collect_lnk_targets(&root, 0, &mut map);
+        }
+        map
+    })
+}
+
+fn collect_lnk_targets(dir: &Path, depth: u32, map: &mut HashMap<String, String>) {
+    if depth > 4 {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_lnk_targets(&path, depth + 1, map);
+            continue;
+        }
+        if !path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("lnk"))
+        {
+            continue;
+        }
+        let (Some(stem), Some(target)) = (
+            path.file_stem().and_then(|s| s.to_str()),
+            shortcut_target(&path),
+        ) else {
+            continue;
+        };
+        map.entry(target.to_lowercase()).or_insert_with(|| stem.to_string());
+    }
+}
+
+/// Resolve a `.lnk` file's target path (IShellLinkW, documented COM shell API).
+fn shortcut_target(lnk: &Path) -> Option<String> {
+    unsafe {
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
+        let pf: IPersistFile = link.cast().ok()?;
+        let wide = to_wide(&lnk.to_string_lossy());
+        pf.Load(PCWSTR(wide.as_ptr()), STGM_READ).ok()?;
+        let mut buf = [0u16; 520];
+        link.GetPath(&mut buf, std::ptr::null_mut(), 0).ok()?;
+        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        (len > 0).then(|| String::from_utf16_lossy(&buf[..len]))
+    }
+}
+
+/// Read one `StringFileInfo` field from a file's version resource (a port of
+/// `startpe/src/util.rs`, so pin fallback names match the GDI menu's).
+fn version_string(path: &str, field: &str) -> Option<String> {
+    use windows::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+    };
+    unsafe {
+        let wpath = to_wide(path);
+        let size = GetFileVersionInfoSizeW(PCWSTR(wpath.as_ptr()), None);
+        if size == 0 {
+            return None;
+        }
+        let mut data = vec![0u8; size as usize];
+        GetFileVersionInfoW(
+            PCWSTR(wpath.as_ptr()),
+            0,
+            size,
+            data.as_mut_ptr() as *mut core::ffi::c_void,
+        )
+        .ok()?;
+
+        // Pick the first language/codepage translation the file declares.
+        let tr_sub = to_wide("\\VarFileInfo\\Translation");
+        let mut tr_ptr: *mut core::ffi::c_void = std::ptr::null_mut();
+        let mut tr_len: u32 = 0;
+        if !VerQueryValueW(
+            data.as_ptr() as *const core::ffi::c_void,
+            PCWSTR(tr_sub.as_ptr()),
+            &mut tr_ptr,
+            &mut tr_len,
+        )
+        .as_bool()
+            || tr_ptr.is_null()
+            || tr_len < 4
+        {
+            return None;
+        }
+        let lang = *(tr_ptr as *const u16);
+        let codepage = *((tr_ptr as *const u16).add(1));
+
+        let sub = to_wide(&format!("\\StringFileInfo\\{lang:04x}{codepage:04x}\\{field}"));
+        let mut val_ptr: *mut core::ffi::c_void = std::ptr::null_mut();
+        let mut val_len: u32 = 0;
+        if !VerQueryValueW(
+            data.as_ptr() as *const core::ffi::c_void,
+            PCWSTR(sub.as_ptr()),
+            &mut val_ptr,
+            &mut val_len,
+        )
+        .as_bool()
+            || val_ptr.is_null()
+            || val_len == 0
+        {
+            return None;
+        }
+        let slice = std::slice::from_raw_parts(val_ptr as *const u16, val_len as usize);
+        Some(String::from_utf16_lossy(slice).trim_end_matches('\0').to_string())
+    }
 }
 
 /// Start-menu pins from `%Windir%\System32\PinUtil.ini` (`[PinUtil]` `StartMenu<n>`),

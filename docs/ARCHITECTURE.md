@@ -292,10 +292,17 @@ Two consequences fix the design:
    PE boot, so StartPE persists the layout itself: bake a `desktop-layout.txt`
    to define positions; it is rewritten as icons move so it can be re-captured).
    The hosted view's right-click menu and double-click-opens-a-folder behave as
-   users expect. Explorer is still launched on demand as the file manager; it
-   just no longer has to be the shell. On a normal box (or a PE where Explorer's
-   desktop does come up) StartPE detects it and stays out of the way. Behavior is
-   `OwnDesktop` (0 auto / 1 always / 2 never).
+   users expect. Icon dragging is StartPE's own (the defview's OLE drag rejects
+   intra-view drops): a subclass on the icon list runs a Windows-style ghost
+   drag — `LVM_CREATEDRAGIMAGE` + the `ImageList_BeginDrag` family — so icons
+   stay put until dropped (the whole selection moves together, snapped to the
+   grid). Keyboard shortcuts (Delete, F2, F5, Ctrl+C/X/V/A…) work because the
+   main message loop routes key messages to the view's
+   `IShellView::TranslateAccelerator` while focus is inside it — the documented
+   `IShellBrowser`-host contract. Explorer is still launched on demand as the
+   file manager; it just no longer has to be the shell. On a normal box (or a PE
+   where Explorer's desktop does come up) StartPE detects it and stays out of
+   the way. Behavior is `OwnDesktop` (0 auto / 1 always / 2 never).
 
 ### Explorer loader shim (`loader/`)
 

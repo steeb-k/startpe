@@ -603,6 +603,14 @@ fn is_task_window(hwnd: HWND, own: HWND) -> bool {
                 return false;
             }
         }
+        // The GTK start-menu helper (StartMenu.exe) marks itself
+        // WS_EX_TOOLWINDOW once mapped, but that can race this enumeration and
+        // GDK rewrites the ex-style from its own cached bits — so also exclude
+        // it by its (StartPE-chosen, unique) title. GTK windows all share the
+        // same class name, so the class list below can't catch just the menu.
+        if window_title(hwnd) == "StartPE Menu" {
+            return false;
+        }
         !matches!(
             window_class(hwnd).as_str(),
             "Progman" | "WorkerW" | "Shell_TrayWnd" | "StartPE_Taskbar" | "StartPE_Menu"
