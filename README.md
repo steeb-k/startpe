@@ -4,8 +4,11 @@ A free, open-source (GPLv3) **taskbar, start menu, and desktop for Windows PE**.
 
 StartPE runs *alongside* Explorer instead of injecting into it: it draws its own
 taskbar/start menu/desktop with plain GDI and documented Win32, and hides
-Explorer's own taskbar. That makes it small (single ~370 KB `startpe.exe`, no
-runtime dependencies).
+Explorer's own taskbar. The core is a single self-contained `startpe.exe`
+(~520 KB, no runtime dependencies, x64-only); an optional suite of
+GTK4/Libadwaita helper apps (start menu, Run, Settings, System Information)
+rides on top for a modern look where the shared GTK runtime is present, with the
+built-in GDI windows always available as the fallback.
 
 ## Status
 
@@ -16,13 +19,17 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the roadmap
 ## Features
 
 ### Taskbar
-- Bottom-docked **appbar** (registered with the shell, so maximized windows
-  respect it). Hides Explorer's Win11 taskbar and keeps it hidden while running;
-  restores it on clean exit.
+- Bottom-docked **appbar** that reserves its strip in the work area itself
+  (`SPI_SETWORKAREA` — the shell's appbar reservation doesn't function on
+  stripped PEs), so maximized windows land above the bar. Hides Explorer's
+  Win11 taskbar and keeps it hidden while running; restores it (and the work
+  area) on clean exit.
 - Centered (Windows 11 style) or left-aligned button cluster (`CenterTaskbar`).
 - Rounded, double-buffered GDI buttons; **icon-only** by default with same-app
   **combining** (click cycles the app's windows), or per-window buttons and
   text labels (`TaskbarCombine` / `TaskbarLabels`).
+- **Instant updates**: new/closed windows appear and disappear immediately
+  (WinEvent hook), with the shell hook and a slow watchdog as backstops.
 - **Hover peek**: previews of every window in a group with per-window close
   buttons — live DWM thumbnails where composition exists, icon + title rows in
   plain PE.
@@ -34,26 +41,21 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the roadmap
   filtered out, UWP windows grouped and icon'd via their real app process.
 
 ### Start menu
-- Two-pane classic Win7/Win10 layout with rounded corners (window region,
-  no DWM needed), floating above the taskbar; follows the taskbar's alignment
-  (centered, or bottom-left when the taskbar is left-aligned).
-- Left pane: apps from the Start Menu folders (`%ProgramData%` + `%APPDATA%`)
-  with shell icons and folder drill-down, or a **pinned view** from `PinUtil.ini`
-  with an All apps / Pinned toggle.
-- **Live search box** — type to filter the indexed shortcuts (with a blinking
-  caret); Enter launches the top hit.
-- Right pane: circular user picture (`UserPicture` .bmp) protruding above the
-  menu, plus links — user profile, Downloads, This PC, Control Panel, Command
-  Prompt, and Run… (StartPE's own dark Run window).
-- Shut down button with a Restart / Shut down flyout (`wpeutil`).
+Two start menus ship; both float above the taskbar and follow its alignment.
 
-### Keyboard navigation
-- Opens with the search box focused; typing always searches.
-- Arrow keys move a focus highlight across the program list, the right-pane
-  links, the search box, and the power button; **Enter** activates.
-- **Right** expands a `>` folder row; from the search box, **Right** reaches the
-  Shut down button, and **Right** again opens the power flyout (Restart
-  highlighted by default).
+- **GTK menu (`StartMenu.exe`, the default when present)** — a
+  GTK4/Libadwaita two-pane menu, pre-warmed hidden at startup so the Win key
+  opens it instantly. Left pane: a **pinned view** from `PinUtil.ini`
+  (32px icons, classic start-menu sizing) with an "All apps ›" toggle that
+  slides the full program list in from the right ("‹ Back" slides the pins
+  back in), folder drill-down, and a search box at the bottom. Right pane:
+  user avatar (`UserPicture`), Downloads / This PC / Control Panel / Terminal
+  links, Run…, and a Power flyout (Restart / Shut down).
+- **Built-in GDI menu** — the same two-pane layout drawn with plain GDI
+  (rounded via window regions, no DWM needed): Start Menu folders with shell
+  icons and drill-down, pinned view, live search with Enter-launches-top-hit,
+  full keyboard navigation, and the same right-pane links. Always available;
+  used automatically when the GTK helper or runtime is absent.
 
 ### System tray
 - StartPE hosts `Shell_NotifyIcon` registrations itself (its own `Shell_TrayWnd`,
@@ -61,78 +63,87 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the roadmap
   forwards left/right clicks to the owning apps. Appbar traffic is proxied to
   Explorer's tray, and NIM traffic mirrored, so Explorer stays consistent.
 
-### Settings pane
-- Right-click the taskbar → **Settings** for an in-app, dark, owner-drawn
-  settings window: on/off switches grouped by surface (Taskbar / Menus), plus a
-  **Start button color** picker (preset swatches + a Custom… color dialog).
-  Changes are written to the registry and applied live where possible.
+### Settings
+- Right-click the taskbar → **Settings**: a GTK4/Libadwaita settings app
+  (`Settings.exe`) when present — grouped switches plus a Start button color
+  picker, applied live via a registered message to the running shell — or the
+  built-in dark, owner-drawn GDI pane with the same options.
 
 ### Window switching & hotkeys
 - **Accent border on the active window** (`WindowBorders`, opt-out) — a thin
-  frame in the Start-button accent color around the foreground, non-maximized
-  window. A click-through GDI overlay that follows the window via
-  `SetWinEventHook`, so it works in plain WinPE where DWM's accent border
-  (`DWMWA_BORDER_COLOR`) is unavailable.
-- Windows 11-style **Alt+Tab** switcher (centered overlay, `PrintWindow`
-  screenshots, no DWM dependency).
-- The **Win key** opens the StartPE menu; **Win+R** (Run), **Win+E** (Explorer),
-  **Win+D** (show desktop), **Win+X** (power-user menu), and **Win+Pause**
-  (System Information) are handled directly (other Win combos pass through).
-- A Windows 11-style **power-user menu** (Win+X, or right-click the start button):
-  Event Viewer, System (the built-in dark System Information window),
-  Device Manager, Disk Management,
-  Computer Management, Terminal (the default `%ComSpec%` processor), Task Manager,
-  File Explorer, Run, a Shut down / Restart flyout, and Desktop — the PE-relevant
-  subset of the Windows 11 menu. Drawn as a rounded, dark, custom popup (no DWM
-  required), with hover/keyboard navigation, a submenu flyout, and Windows 11
-  access keys (the underlined letter activates the item). Any click or new
-  window outside the menu dismisses it.
+  frame in the Start-button accent color around the foreground window. With DWM
+  it recolors the real window border (`DWMWA_BORDER_COLOR`); in plain WinPE a
+  click-through GDI overlay follows the window via `SetWinEventHook`.
+- Windows 11-style **Alt+Tab** switcher: a centered overlay grid of
+  `PrintWindow` screenshots (no DWM dependency); minimized windows show their
+  app icon.
+- The **Win key** opens the StartPE menu; **Win+R** (Run), **Win+E** (file
+  manager), **Win+D** (show desktop), **Win+X** (power-user menu), and
+  **Win+Pause** (System Information) are handled directly (other Win combos
+  pass through).
+- A Windows 11-style **power-user menu** (Win+X, or right-click the start
+  button): Event Viewer, System, Device Manager, Disk Management, Computer
+  Management, Terminal, Task Manager, File Explorer, Run, a Shut down / Restart
+  flyout, and Desktop — the PE-relevant subset of the Windows 11 menu, drawn as
+  a rounded dark custom popup with hover/keyboard navigation and access keys.
+- **Terminal everywhere honors `TerminalApp`**: the Win+X Terminal entry and
+  both start menus' Terminal link launch the configured terminal (falling back
+  to `%ComSpec%`, then `cmd.exe`) — set the registry value from your terminal's
+  PE component and every surface opens it.
 
 ### Dark theming
 - Dark, rounded, custom-drawn popup menus (taskbar context menu, power flyout,
   Win+X menu) — rounded corners without DWM, correct separator behavior.
 - Dark-mode for the shell-rendered menus StartPE raises (chiefly the hosted
   desktop's right-click menu) via uxtheme app mode (`DarkMenus`, opt-out).
-- A **from-scratch dark Run window** (Win+R / start menu / Win+X) — a fully
-  owner-drawn replacement for the shell Run box that's actually dark in PE
-  (no DWM/Themes dependency), with history recall and Browse.
-- A **from-scratch dark System Information window** — a hardware-first
-  replacement for msinfo32 / the sysdm.cpl summary page. Accent-tinted two-pane
-  layout (System, CPU & memory, graphics & displays, storage & network), data
-  from WMI with documented Win32/registry fallbacks. Opens from Win+X → System,
-  **Win+Pause**, and **right-click This PC → Properties** (the PE image redirects
-  the System Properties verb to `startpe.exe --sysinfo`).
+- A **dark Run box** — the GTK `RunBox.exe` when present, else a fully
+  owner-drawn GDI replacement for the shell Run box that's actually dark in PE,
+  both with history recall and Browse.
+- A **dark System Information window** — the GTK `SystemInfo.exe` when present,
+  else the built-in hardware-first GDI replacement for msinfo32 / sysdm.cpl
+  (System, CPU & memory, graphics & displays, storage & network; WMI with
+  documented fallbacks). Opens from Win+X → System, **Win+Pause**, and
+  **right-click This PC → Properties** (the PE image redirects the System
+  Properties verb to `startpe.exe --sysinfo`).
 
 ### Desktop (when Explorer can't provide one)
 On Win11 24H2/25H2 PE sources, Explorer's modern taskbar init fail-fasts and the
 desktop (`Progman`/`SHELLDLL_DefView`) is never created. When StartPE detects
 this it **provides the desktop itself** (`OwnDesktop`): a `Progman`-style window
 painting the wallpaper (BMP/PNG/JPG via GDI+) and hosting a *real* shell icon
-view of the Public Desktop — with working right-click menus, double-click, icon
-drag, and layout save/restore to `desktop-layout.txt`. On a normal box (or a PE
-where Explorer's desktop appears) it detects that and stays out of the way.
+view of the Public Desktop — with working right-click menus, double-click,
+Windows-style **ghost icon drag** (multi-select drags as a group, snapped to the
+grid on drop), **keyboard shortcuts** (Delete, F2 rename, F5, Ctrl+C/X/V/A…),
+and layout save/restore to `desktop-layout.txt`. On a normal box (or a PE where
+Explorer's desktop appears) it detects that and stays out of the way.
 
-A small companion DLL, `startpe_loader.dll`, can be COM-registered so Explorer
-loads it early to keep its shell thread alive past the Win11 taskbar init; this
-is the one component permitted to touch Explorer internals (`startpe.exe` itself
-stays documented Win32).
+Two small companions ship alongside:
+- `startpe_loader.dll` — COM-registered so Explorer loads it early and its shell
+  thread survives the Win11 taskbar init; the one component permitted to touch
+  Explorer internals (`startpe.exe` itself stays documented Win32).
+- `syslaunch.exe` — runs a program as SYSTEM on the interactive session's
+  desktop, so a DWM-composited PE (Administrator auto-login) can still run
+  StartPE with SYSTEM privileges (`LaunchAsSystem`).
 
 ## Configuration
 
 Read once at startup from `HKLM\Software\StartPE`, then overlaid by
 `HKCU\Software\StartPE`. PE runs the shell as `SYSTEM`, so a PEBakery build
-writes config machine-wide into the offline SOFTWARE hive; the in-app settings
-pane writes runtime changes to `HKCU`. See the value table in
+writes config machine-wide into the offline SOFTWARE hive; the settings app
+writes runtime changes to `HKCU`. See the value table in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Building
 
 ```
-cargo build --release --workspace   # x64 (startpe.exe + startpe_loader.dll + syslaunch.exe)
+cargo build --release --workspace   # x64: startpe.exe + startpe_loader.dll + syslaunch.exe
 ```
 
-Produces a single self-contained `startpe.exe` (~370 KB, no runtime
-dependencies) and the optional `startpe_loader.dll`.
+The GTK helpers under `helpers/` (`StartMenu.exe`, `RunBox.exe`, `Settings.exe`,
+`SystemInfo.exe`) are excluded from the MSVC workspace; release binaries are
+built by CI with the MSYS2 ucrt64 toolchain and attached to the same GitHub
+release. `startpe.exe` auto-detects them as siblings at runtime — no helper, no
+GTK dependency.
 
 ## Testing on a full Windows machine
 
@@ -143,9 +154,10 @@ differs between full Windows (DWM, UWP windows) and PE (neither).
 
 ## PE integration
 
-`pebakery/StartPE.script` copies the binary into the image and writes the launch
-and configuration registry values into the mounted SOFTWARE hive at build time.
-It's modeled on PhoenixPE scripts but can be modified to work in any PEBakery build.
+`pebakery/StartPE.script` copies the binaries into the image and writes the
+launch and configuration registry values into the mounted SOFTWARE hive at build
+time. It's modeled on PhoenixPE scripts but can be modified to work in any
+PEBakery build.
 
 ## License
 
