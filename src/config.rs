@@ -190,6 +190,29 @@ pub fn sysinfo_app() -> Option<String> {
     app
 }
 
+/// The command every "Terminal" surface launches (the Win+X Terminal entry and
+/// the start menus' Terminal link). Resolution: the `TerminalApp` registry
+/// value (HKLM then HKCU, same override semantics as [`sysinfo_app`] — set it
+/// to a third-party terminal's path from that terminal's PE component), else
+/// `%ComSpec%` (the documented command-processor handle), else `cmd.exe`.
+/// Windows' own "default terminal application" setting can't help here: it
+/// only redirects conhost *hosting* on a full desktop, not what gets launched,
+/// and its delegation plumbing doesn't exist in PE.
+pub fn terminal_command() -> String {
+    let mut app = None;
+    for hive in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
+        if let Ok(key) = RegKey::predef(hive).open_subkey(KEY) {
+            if let Ok(v) = key.get_value::<String, _>("TerminalApp") {
+                if !v.trim().is_empty() {
+                    app = Some(v);
+                }
+            }
+        }
+    }
+    app.or_else(|| std::env::var("ComSpec").ok())
+        .unwrap_or_else(|| "cmd.exe".to_string())
+}
+
 /// Path to an external Run app — the GTK4/Libadwaita `RunBox.exe` helper — if one
 /// is configured under `RunApp`. Same HKLM→HKCU read and override semantics as
 /// [`sysinfo_app`]: by default StartPE auto-detects a sibling `RunBox.exe`, so this

@@ -282,8 +282,9 @@ fn build_right_items() -> Vec<RightItem> {
         },
         RightItem {
             glyph: GLYPH_CMD,
-            label: "Command Prompt".to_string(),
-            cmd: "cmd.exe".to_string(),
+            label: "Terminal".to_string(),
+            // The configured TerminalApp / %ComSpec% / cmd.exe.
+            cmd: crate::config::terminal_command(),
             args: String::new(),
         },
         RightItem {

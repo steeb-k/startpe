@@ -410,8 +410,29 @@ fn right_links() -> Vec<(&'static str, String, String)> {
         ("folder-download-symbolic", "Downloads".into(), format!("{profile}\\Downloads")),
         ("drive-harddisk-symbolic", "This PC".into(), "shell:MyComputerFolder".into()),
         ("applications-system-symbolic", "Control Panel".into(), "control.exe".into()),
-        ("utilities-terminal-symbolic", "Command Prompt".into(), "cmd.exe".into()),
+        ("utilities-terminal-symbolic", "Terminal".into(), terminal_command()),
     ]
+}
+
+/// What the Terminal link launches — mirrors StartPE's `config::terminal_command`:
+/// the `TerminalApp` registry value (HKLM then HKCU, HKCU wins), else `%ComSpec%`,
+/// else cmd.exe.
+fn terminal_command() -> String {
+    let mut app: Option<String> = None;
+    for hive in [
+        winreg::enums::HKEY_LOCAL_MACHINE,
+        winreg::enums::HKEY_CURRENT_USER,
+    ] {
+        if let Ok(k) = winreg::RegKey::predef(hive).open_subkey("Software\\StartPE") {
+            if let Ok(v) = k.get_value::<String, _>("TerminalApp") {
+                if !v.trim().is_empty() {
+                    app = Some(v);
+                }
+            }
+        }
+    }
+    app.or_else(|| std::env::var("ComSpec").ok())
+        .unwrap_or_else(|| "cmd.exe".to_string())
 }
 
 /// The configured user picture (`UserPicture` in the registry) as a texture, if set.

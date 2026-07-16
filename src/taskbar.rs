@@ -1113,12 +1113,10 @@ fn show_winx_menu(hwnd: HWND, select_first: bool) {
     }
 }
 
-/// The default registered command processor for the Terminal entry. `%ComSpec%`
-/// is the documented "command processor" handle (cmd.exe out of the box; a PE
-/// can point it at PowerShell), so honoring it does the right thing without
-/// hard-coding a shell. Falls back to cmd.exe if the variable is unset.
+/// What the Win+X Terminal entry launches: the configured `TerminalApp`, else
+/// `%ComSpec%`, else cmd.exe. See `config::terminal_command`.
 fn default_terminal() -> String {
-    std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string())
+    crate::config::terminal_command()
 }
 
 /// Whether the start button + task buttons are centered (vs left-aligned). Read

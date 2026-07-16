@@ -145,9 +145,9 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   `PrintWindow` screenshot), flowing left-to-right and wrapping into a grid once
   a row would pass ~85% of the screen width. No DWM dependency (static
   screenshots, not live thumbnails); releasing Alt / Enter / a click activates
-  the selection, Esc cancels. Minimized windows can't be `PrintWindow`d, so a
-  `EVENT_SYSTEM_MINIMIZESTART` WinEvent snapshots each window as its minimize
-  begins and the switcher shows that cached thumbnail while it stays iconic
+  the selection, Esc cancels. Minimized windows can't be `PrintWindow`d and
+  show their app icon instead (a minimize-time snapshot cache was tried and
+  dropped as too heavy — don't reintroduce it)
 - `src/border.rs` — accent window frame for the **no-DWM** path (plain PE).
   Opt-out `WindowBorders`, default on. A click-through, never-activated `WS_POPUP`
   overlay shaped to a thin ring by `SetWindowRgn`, kept positioned over the active
@@ -222,6 +222,7 @@ Current values (all `REG_DWORD`):
 | `RunApp` | _(unset)_ | Optional **override** path to the GTK Run helper. By default StartPE auto-detects a sibling `RunBox.exe`; set this only to point elsewhere. Unset **and** no sibling = the built-in GDI Run box. Launched for every Run entry point (Win+R, start menu Run…, Win+X). Not written by `StartPE.script` (see `run_window::gtk_helper`) |
 | `SettingsApp` | _(unset)_ | Optional **override** path to the GTK Settings helper. By default StartPE auto-detects a sibling `Settings.exe`; set this only to point elsewhere. Unset **and** no sibling = the built-in GDI pane. The helper writes the same `HKCU` values and posts `StartPE_ReloadConfig` for live apply. Not written by `StartPE.script` (see `settings::gtk_helper`) |
 | `StartMenuApp` | _(unset)_ | Optional **override** path to the GTK Start menu helper. By default StartPE auto-detects a sibling `StartMenu.exe` and pre-warms it (hidden) at startup; `start_menu::toggle()` then drives it via the registered `StartPE_ToggleStartMenu` message (Win key / start button), with the built-in GDI menu as fallback when it (or the GTK runtime) is absent. Not written by `StartPE.script` (see `start_menu::launch_helper`) |
+| `TerminalApp` | _(unset)_ | Terminal command for every "Terminal" surface (Win+X → Terminal, both start menus' Terminal link). Unset falls back to `%ComSpec%`, then `cmd.exe`. Set it from the terminal's own PE component (like `FileManager`), not `StartPE.script`. Windows' "default terminal application" setting cannot be honored: it only redirects conhost hosting on a full desktop and its delegation plumbing doesn't exist in PE (see `config::terminal_command`) |
 
 Launch: the PEBakery script writes the Run key for classic logon flows and
 calls `AddAutoRun,PostShell` so winrx-creator/PhoenixPE images start StartPE
