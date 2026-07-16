@@ -331,6 +331,9 @@ unsafe fn helper_ipc() -> Option<HWND> {
 }
 
 pub fn toggle() {
+    // Whatever opens/closes the menu (start click, Win key, IPC), an open peek
+    // panel must not linger over it.
+    crate::peek::hide();
     unsafe {
         // Prefer the pre-warmed GTK helper if it's running: grant it foreground
         // and post the toggle. If FindWindow fails (helper absent or crashed),

@@ -776,9 +776,13 @@ fn peek_request(index: usize) -> Option<(Vec<crate::peek::PeekEntry>, RECT, i32)
         unsafe {
             GetWindowRect(s.hwnd, &mut wr).ok()?;
         }
-        let entries = b
+        let entries: Vec<_> = b
             .windows
             .iter()
+            // A button's window list is only as fresh as the last refresh; a
+            // window that vanished (or hid, like the pre-warmed start menu)
+            // must not produce a phantom preview cell.
+            .filter(|&&w| unsafe { IsWindowVisible(w).as_bool() })
             .map(|&w| crate::peek::PeekEntry {
                 hwnd: w,
                 title: window_title(w),
@@ -1632,7 +1636,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
             if changed {
                 // Peek: switch instantly when one is already open, otherwise
-                // open after a short hover delay.
+                // open after a short hover delay. Moving onto anything that is
+                // not a task button (Start, tray, clock…) dismisses an open
+                // peek right away — its own poll only checks the panel and the
+                // anchor rect, which can be stale (button rects shift when the
+                // button set changes, e.g. when the start menu opens), so a
+                // lingering peek could otherwise sit over the open menu.
                 match hit {
                     Hit::Task(i) => {
                         if crate::peek::is_visible() {
@@ -1643,6 +1652,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     }
                     _ => {
                         let _ = KillTimer(hwnd, TIMER_PEEK);
+                        crate::peek::hide();
                     }
                 }
                 let _ = InvalidateRect(hwnd, None, false);
