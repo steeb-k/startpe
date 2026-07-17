@@ -40,6 +40,7 @@ const NIF_ICON: u32 = 0x2;
 const NIF_TIP: u32 = 0x4;
 const NIF_STATE: u32 = 0x8;
 const NIS_HIDDEN: u32 = 0x1;
+const NIS_SHAREDICON: u32 = 0x2;
 
 /// Wire format of Shell_NotifyIcon's WM_COPYDATA payload (after the 8-byte
 /// header): NOTIFYICONDATAW with 32-bit handles.
@@ -68,6 +69,11 @@ struct TrayIcon {
     uid: u32,
     callback: u32,
     icon: Option<HICON>,
+    /// Sender-side HICON value `icon` was last copied from (non-shared).
+    /// NIS_SHAREDICON updates reference earlier registrations by this value —
+    /// the sender may have destroyed the original handle since, so shared
+    /// lookups must resolve against our stored copies, never the wire handle.
+    src: u32,
     tip: String,
     hidden: bool,
     version: u32,
@@ -174,6 +180,24 @@ pub fn create(taskbar: HWND) -> Result<()> {
         SetTimer(hwnd, TIMER_ANNOUNCE, ANNOUNCE_INTERVAL_MS, None);
         Ok(())
     }
+}
+
+/// Diagnostic trail for Shell_NotifyIcon traffic (PE has no Event Viewer).
+fn tray_log(msg: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("X:\\startpe.log")
+    {
+        let _ = writeln!(f, "tray: {msg}");
+    }
+}
+
+fn window_pid(hwnd: HWND) -> u32 {
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    pid
 }
 
 fn broadcast_taskbar_created() {
@@ -307,6 +331,20 @@ unsafe fn handle_notify_data(cds: &COPYDATASTRUCT) -> bool {
     let n = (cds.cbData as usize - 8).min(std::mem::size_of::<NotifyIconData32>());
     std::ptr::copy_nonoverlapping(data.add(8), &mut nid as *mut _ as *mut u8, n);
 
+    tray_log(&format!(
+        "NIM msg={} cbData={} cbSize={} owner=0x{:X} (pid {}) uid={} flags=0x{:X} hicon=0x{:X} state=0x{:X}/0x{:X}",
+        message,
+        cds.cbData,
+        nid.cb_size,
+        nid.hwnd,
+        window_pid(HWND(nid.hwnd as usize as *mut _)),
+        nid.uid,
+        nid.flags,
+        nid.hicon,
+        nid.state,
+        nid.state_mask,
+    ));
+
     let changed = TRAY.with_borrow_mut(|t| {
         let Some(t) = t.as_mut() else { return false };
         let pos = t
@@ -315,6 +353,27 @@ unsafe fn handle_notify_data(cds: &COPYDATASTRUCT) -> bool {
             .position(|i| i.owner == nid.hwnd && i.uid == nid.uid);
         match message {
             NIM_ADD | NIM_MODIFY => {
+                // Resolve shared-icon references before borrowing the target
+                // entry: clone the copy we stored when the handle value was
+                // first registered (any entry, including a hidden pool icon).
+                let shared = nid.flags & NIF_ICON != 0
+                    && nid.flags & NIF_STATE != 0
+                    && nid.state & nid.state_mask & NIS_SHAREDICON != 0;
+                let shared_copy = if shared {
+                    t.icons
+                        .iter()
+                        .find(|i| i.src == nid.hicon && i.icon.is_some())
+                        .and_then(|i| i.icon)
+                        .and_then(|h| CopyIcon(h).ok())
+                } else {
+                    None
+                };
+                if shared && shared_copy.is_none() {
+                    tray_log(&format!(
+                        "shared icon 0x{:X} not found for owner=0x{:X} uid={}; falling back to raw handle",
+                        nid.hicon, nid.hwnd, nid.uid
+                    ));
+                }
                 let idx = match pos {
                     Some(i) => i,
                     None => {
@@ -323,6 +382,7 @@ unsafe fn handle_notify_data(cds: &COPYDATASTRUCT) -> bool {
                             uid: nid.uid,
                             callback: 0,
                             icon: None,
+                            src: 0,
                             tip: String::new(),
                             hidden: false,
                             version: 0,
@@ -341,7 +401,16 @@ unsafe fn handle_notify_data(cds: &COPYDATASTRUCT) -> bool {
                     if let Some(old) = icon.icon.take() {
                         let _ = DestroyIcon(old);
                     }
-                    icon.icon = CopyIcon(src).ok();
+                    icon.icon = shared_copy.or_else(|| CopyIcon(src).ok());
+                    if !shared {
+                        icon.src = nid.hicon;
+                    }
+                    if icon.icon.is_none() {
+                        tray_log(&format!(
+                            "CopyIcon FAILED for owner=0x{:X} uid={} hicon=0x{:X}",
+                            nid.hwnd, nid.uid, nid.hicon
+                        ));
+                    }
                 }
                 if nid.flags & NIF_TIP != 0 {
                     icon.tip = utf16_until_nul(&nid.tip);
@@ -417,6 +486,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             return LRESULT(handled as isize);
         }
         // Appbar protocol and anything else: proxy to the real shell tray.
+        tray_log(&format!(
+            "non-NIM COPYDATA dwData={} cbData={} from pid {}",
+            cds.dwData,
+            cds.cbData,
+            window_pid(HWND(wparam.0 as *mut _)),
+        ));
         let explorer = TRAY.with_borrow(|t| t.as_ref().map(|t| t.explorer_tray));
         if let Some(explorer) = explorer {
             if !explorer.is_invalid() && IsWindow(explorer).as_bool() {
