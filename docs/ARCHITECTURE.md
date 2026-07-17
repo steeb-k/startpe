@@ -33,6 +33,13 @@ StartAllBack restyles Explorer's taskbar in-process. StartPE instead:
    working shell on these PE images to handle them): Win+R (Run), Win+E (file
    explorer), Win+D (show desktop), Win+X (the power-user menu — also opened by
    right-clicking the start button). Other Win+<key> combos pass through.
+6. Converts `WM_DEVICECHANGE` volume broadcasts into shell change
+   notifications. Explorer's desktop instance normally does this so open/save
+   dialogs and any `IShellView` refresh their drive lists on hot-plug; because
+   Explorer never builds its desktop on these PE images, the taskbar wndproc
+   decodes the `DBT_DEVTYP_VOLUME` unit mask on arrival/removal and fans out
+   one `SHChangeNotify(SHCNE_DRIVEADD/SHCNE_DRIVEREMOVED, SHCNF_PATHW, "X:\\")`
+   per affected drive letter — otherwise drive letters go stale on plug/unplug.
 
 Note on hiding Explorer's taskbar: hiding the `Shell_TrayWnd` window is not
 enough, because its appbar *work-area reservation* survives and leaves a dead

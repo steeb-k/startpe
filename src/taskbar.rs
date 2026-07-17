@@ -1889,6 +1889,40 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
             LRESULT(0)
         }
+        WM_DEVICECHANGE => {
+            // Explorer's desktop instance normally converts these hardware
+            // broadcasts into shell change notifications so Open/Save dialogs,
+            // the desktop, and any IShellView refresh their drive lists when a
+            // volume is mounted or removed. In our PE builds Explorer never
+            // builds its desktop, so nobody performs that conversion and drive
+            // letters go stale on hot-plug. Do it here: decode the volume mask
+            // and fan out one SHChangeNotify per affected drive letter.
+            let event = wparam.0 as u32;
+            if (event == DBT_DEVICEARRIVAL || event == DBT_DEVICEREMOVECOMPLETE) && lparam.0 != 0 {
+                let hdr = &*(lparam.0 as *const DEV_BROADCAST_HDR);
+                if hdr.dbch_devicetype == DBT_DEVTYP_VOLUME {
+                    let vol = &*(lparam.0 as *const DEV_BROADCAST_VOLUME);
+                    let id = if event == DBT_DEVICEARRIVAL {
+                        SHCNE_DRIVEADD
+                    } else {
+                        SHCNE_DRIVEREMOVED
+                    };
+                    for bit in 0..26u32 {
+                        if vol.dbcv_unitmask & (1 << bit) != 0 {
+                            let root: [u16; 4] = [b'A' as u16 + bit as u16, b':' as u16, b'\\' as u16, 0];
+                            SHChangeNotify(
+                                id,
+                                SHCNF_PATHW,
+                                Some(root.as_ptr() as *const core::ffi::c_void),
+                                None,
+                            );
+                        }
+                    }
+                }
+            }
+            // Return TRUE to grant any device-change query (we never veto).
+            LRESULT(1)
+        }
         WM_MOUSEMOVE => {
             let x = util::loword(lparam.0);
             let y = util::hiword(lparam.0);
