@@ -15,6 +15,7 @@ mod winfix;
 // Duplicated verbatim across the GTK helpers; each uses a different subset.
 #[allow(dead_code)]
 mod winicon;
+mod winstyle;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -44,6 +45,7 @@ fn build_ui(app: &adw::Application) {
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+    winstyle::apply();
 
     // --- Sidebar: the four sections. ---
     let list = ListBox::new();

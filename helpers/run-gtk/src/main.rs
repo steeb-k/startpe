@@ -16,6 +16,7 @@ mod run_exec;
 // Duplicated verbatim across the GTK helpers; each uses a different subset.
 #[allow(dead_code)]
 mod winicon;
+mod winstyle;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -38,6 +39,7 @@ const PROMPT: &str = "Type the name of a program, folder, document, or Internet 
 
 fn build_ui(app: &adw::Application) {
     adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
+    winstyle::apply();
 
     let history = run_exec::load_history(); // oldest first
 

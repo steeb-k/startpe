@@ -7,7 +7,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 
 use windows::core::{w, Result, PCWSTR, PWSTR};
 use windows::Win32::Foundation::*;
@@ -57,6 +57,23 @@ const TIMER_NETWORK: usize = 5;
 /// are delivered while pumping messages, so a borrow could already be live).
 static WINEVENT_TASKBAR: AtomicIsize = AtomicIsize::new(0);
 
+/// Registered window-message ids ("SHELLHOOK" / "StartPE_ReloadConfig"), set at
+/// WM_CREATE. Kept in atomics — not in `STATE` — because the wndproc checks
+/// them on *every* message, including messages delivered re-entrantly while a
+/// `STATE` borrow is live (a thread blocked in a cross-thread `SendMessage`
+/// dispatches incoming sent messages), where a `RefCell` borrow would panic.
+static SHELLHOOK_MSG: AtomicU32 = AtomicU32::new(0);
+static RELOAD_MSG: AtomicU32 = AtomicU32::new(0);
+
+/// `SHELLHOOKINFO` as delivered with HSHELL_GETMINRECT: the window being
+/// minimized/restored, plus the animation-target rect the handler fills in —
+/// four 16-bit screen coordinates (the legacy MINRECT layout, not a `RECT`).
+#[repr(C)]
+struct ShellHookInfo {
+    hwnd: HWND,
+    rc: [i16; 4],
+}
+
 // Colors are COLORREF values (0x00BBGGRR).
 pub const COL_BG: u32 = 0x00201F1F;
 pub const COL_HOVER: u32 = 0x00353333;
@@ -99,10 +116,6 @@ struct State {
     hwnd: HWND,
     /// Left edge of the start button (cluster may be centered).
     start_x: i32,
-    shellhook_msg: u32,
-    /// Registered "StartPE_ReloadConfig" message: an external settings helper
-    /// posts it to ask us to re-read config and apply it live (`reload_config`).
-    reload_msg: u32,
     font: HFONT,
     font_small: HFONT,
     font_glyph: HFONT,
@@ -128,6 +141,8 @@ thread_local! {
     static WIN_PENDING: Cell<bool> = const { Cell::new(false) };
     /// Windows minimized by the last Win+D ("show desktop"); restored on the next.
     static MINIMIZED: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) };
+    /// True while `refresh_buttons` is mid-rebuild (see its borrow note).
+    static REFRESHING: Cell<bool> = const { Cell::new(false) };
 }
 
 pub struct Taskbar {
@@ -160,8 +175,6 @@ impl Taskbar {
                     cfg: cfg.clone(),
                     hwnd: HWND::default(),
                     start_x: 0,
-                    shellhook_msg: 0,
-                    reload_msg: 0,
                     font,
                     font_small,
                     font_glyph,
@@ -959,46 +972,96 @@ fn client_size(hwnd: HWND) -> (i32, i32) {
     }
 }
 
-fn refresh_buttons(state: &mut State) {
-    unsafe {
-        let mut ctx: (HWND, Vec<HWND>) = (state.hwnd, Vec::new());
-        let _ = EnumWindows(Some(enum_proc), LPARAM(&mut ctx as *mut _ as isize));
+/// Re-enumerate task windows and rebuild the button list.
+///
+/// Split into phases so no `STATE` borrow is held across the enumeration:
+/// `window_icon` blocks in a cross-thread `SendMessageTimeoutW` (WM_GETICON),
+/// and a thread waiting in a cross-thread send dispatches incoming *sent*
+/// messages (WM_DISPLAYCHANGE, WM_SETTINGCHANGE, appbar callbacks, ...)
+/// re-entrantly into this wndproc. A mutable borrow live across that pump
+/// panics on the first handler that touches `STATE`, and `panic = "abort"`
+/// makes it fatal — the sporadic crash on display-resolution changes.
+fn refresh_buttons() {
+    // A re-entrant call (sent message dispatched during the icon fetch) is
+    // skipped; the outer call completes with data at least as fresh.
+    if REFRESHING.replace(true) {
+        return;
+    }
+    // Snapshot inputs; take the icon cache so the enumeration can fill it
+    // without holding a borrow.
+    let snap = STATE.with_borrow_mut(|s| {
+        s.as_mut()
+            .map(|s| (s.hwnd, s.cfg.combine, std::mem::take(&mut s.icon_cache)))
+    });
+    let Some((taskbar, combine, mut icon_cache)) = snap else {
+        REFRESHING.set(false);
+        return;
+    };
 
-        // Group by owning exe. Without combining, every window gets its own
-        // button and the key is unique.
-        let mut fresh: Vec<TaskButton> = Vec::new();
-        for hwnd in ctx.1 {
-            let exe = effective_exe(hwnd);
-            let key = if state.cfg.combine {
-                // StartPE's own applets (Run, System Information) are all
-                // `startpe.exe`, so an exe-based key would merge them into one
-                // button — key them by window class instead so they stay separate.
-                let class = window_class(hwnd);
-                if class.starts_with("StartPE_") {
-                    class
-                } else {
-                    exe.clone().unwrap_or_else(|| format!("hwnd:{:?}", hwnd.0))
-                }
-            } else {
-                format!("hwnd:{:?}", hwnd.0)
-            };
-            if let Some(b) = fresh.iter_mut().find(|b| b.key == key) {
-                b.windows.push(hwnd);
-            } else {
-                // UWP windows publish no icon — fall back to the app exe's.
-                let icon = window_icon(hwnd)
-                    .or_else(|| exe.and_then(|e| cached_exe_icon(&mut state.icon_cache, &e)));
-                fresh.push(TaskButton {
-                    key,
-                    windows: vec![hwnd],
-                    title: window_title(hwnd),
-                    icon,
-                    rect: RECT::default(),
-                    pinned_exe: None,
-                });
-            }
+    let fresh = enum_task_buttons(taskbar, combine, &mut icon_cache);
+
+    STATE.with_borrow_mut(|s| {
+        if let Some(s) = s.as_mut() {
+            s.icon_cache = icon_cache;
+            merge_and_layout(s, fresh);
         }
+    });
+    REFRESHING.set(false);
+}
 
+/// Enumerate task windows into fresh (unordered) buttons. Pumps sent messages
+/// (see `refresh_buttons`) — must not run under a `STATE` borrow.
+fn enum_task_buttons(
+    taskbar: HWND,
+    combine: bool,
+    icon_cache: &mut HashMap<String, HICON>,
+) -> Vec<TaskButton> {
+    let mut ctx: (HWND, Vec<HWND>) = (taskbar, Vec::new());
+    unsafe {
+        let _ = EnumWindows(Some(enum_proc), LPARAM(&mut ctx as *mut _ as isize));
+    }
+
+    // Group by owning exe. Without combining, every window gets its own
+    // button and the key is unique.
+    let mut fresh: Vec<TaskButton> = Vec::new();
+    for hwnd in ctx.1 {
+        let exe = effective_exe(hwnd);
+        let key = if combine {
+            // StartPE's own applets (Run, System Information) are all
+            // `startpe.exe`, so an exe-based key would merge them into one
+            // button — key them by window class instead so they stay separate.
+            let class = window_class(hwnd);
+            if class.starts_with("StartPE_") {
+                class
+            } else {
+                exe.clone().unwrap_or_else(|| format!("hwnd:{:?}", hwnd.0))
+            }
+        } else {
+            format!("hwnd:{:?}", hwnd.0)
+        };
+        if let Some(b) = fresh.iter_mut().find(|b| b.key == key) {
+            b.windows.push(hwnd);
+        } else {
+            // UWP windows publish no icon — fall back to the app exe's.
+            let icon = window_icon(hwnd)
+                .or_else(|| exe.and_then(|e| cached_exe_icon(icon_cache, &e)));
+            fresh.push(TaskButton {
+                key,
+                windows: vec![hwnd],
+                title: window_title(hwnd),
+                icon,
+                rect: RECT::default(),
+                pinned_exe: None,
+            });
+        }
+    }
+    fresh
+}
+
+/// Merge fresh buttons with the existing stable order + pins, then lay out.
+/// Local/GDI-only work — safe under the `STATE` borrow.
+fn merge_and_layout(state: &mut State, mut fresh: Vec<TaskButton>) {
+    {
         // EnumWindows yields Z-order, which changes on every activation.
         // Keep button order stable: surviving buttons stay where they were,
         // new windows append at the end (like the real taskbar).
@@ -1225,10 +1288,10 @@ pub fn reload_config() {
     let hwnd = STATE.with_borrow_mut(|s| {
         s.as_mut().map(|s| {
             s.cfg = cfg;
-            refresh_buttons(s);
             s.hwnd
         })
     });
+    refresh_buttons();
     if let Some(hwnd) = hwnd {
         unsafe {
             let _ = InvalidateRect(hwnd, None, false);
@@ -1673,20 +1736,47 @@ fn draw_show_desktop(state: &State, hdc: HDC, width: i32, height: i32) {
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // Custom (registered) shell hook message: window list changed.
-    let shellhook = STATE.with_borrow(|s| s.as_ref().map(|s| s.shellhook_msg).unwrap_or(0));
+    let shellhook = SHELLHOOK_MSG.load(Ordering::Relaxed);
     if shellhook != 0 && msg == shellhook {
-        STATE.with_borrow_mut(|s| {
-            if let Some(s) = s.as_mut() {
-                refresh_buttons(s);
+        // HSHELL_GETMINRECT: the system asks where a minimize/restore should
+        // animate to. Fill in the window's task-button rect (screen coords,
+        // packed as 16-bit shorts — the legacy MINRECT wire format every
+        // alternative shell uses) so windows shrink into their taskbar button
+        // instead of the bottom-left corner. Returning 0 (button unknown)
+        // leaves the default animation.
+        const HSHELL_GETMINRECT: usize = 5;
+        if wparam.0 & 0x7fff == HSHELL_GETMINRECT && lparam.0 != 0 {
+            let info = &mut *(lparam.0 as *mut ShellHookInfo);
+            let target = STATE.with_borrow(|s| {
+                s.as_ref().and_then(|s| {
+                    s.buttons
+                        .iter()
+                        .find(|b| b.windows.contains(&info.hwnd))
+                        .map(|b| b.rect)
+                })
+            });
+            if let Some(r) = target {
+                let mut bar = RECT::default();
+                let _ = GetWindowRect(hwnd, &mut bar);
+                let short = |v: i32| v.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                info.rc = [
+                    short(bar.left + r.left),
+                    short(bar.top + r.top),
+                    short(bar.left + r.right),
+                    short(bar.top + r.bottom),
+                ];
+                return LRESULT(1);
             }
-        });
+            return LRESULT(0);
+        }
+        refresh_buttons();
         let _ = InvalidateRect(hwnd, None, false);
         return LRESULT(0);
     }
 
     // Custom (registered) message: an external settings helper changed config and
     // is asking us to re-read it and apply live (mirrors the in-process pane).
-    let reload = STATE.with_borrow(|s| s.as_ref().map(|s| s.reload_msg).unwrap_or(0));
+    let reload = RELOAD_MSG.load(Ordering::Relaxed);
     if reload != 0 && msg == reload {
         reload_config();
         return LRESULT(0);
@@ -1697,11 +1787,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let height = STATE.with_borrow_mut(|s| {
                 let s = s.as_mut().unwrap();
                 s.hwnd = hwnd;
-                s.shellhook_msg = RegisterWindowMessageW(w!("SHELLHOOK"));
-                s.reload_msg = RegisterWindowMessageW(w!("StartPE_ReloadConfig"));
                 scaled(s.cfg.taskbar_height)
             });
+            SHELLHOOK_MSG.store(RegisterWindowMessageW(w!("SHELLHOOK")), Ordering::Relaxed);
+            RELOAD_MSG.store(
+                RegisterWindowMessageW(w!("StartPE_ReloadConfig")),
+                Ordering::Relaxed,
+            );
             register_appbar(hwnd, height);
+            // Order matters: the taskman claim is what routes the
+            // HSHELL_GETMINRECT query (minimize-animation target) to us;
+            // RegisterShellHookWindow alone only delivers notifications.
+            crate::taskman::claim(hwnd);
             let _ = RegisterShellHookWindow(hwnd);
             // The shell hook alone reacts noticeably late to new windows (and
             // misses some transitions); a WinEvent hook for show/hide/destroy
@@ -1721,7 +1818,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             SetTimer(hwnd, TIMER_CLOCK, 1000, None);
             SetTimer(hwnd, TIMER_WATCHDOG, 3000, None);
             SetTimer(hwnd, TIMER_NETWORK, 3000, None);
-            STATE.with_borrow_mut(|s| refresh_buttons(s.as_mut().unwrap()));
+            refresh_buttons();
             LRESULT(0)
         }
         WM_TIMER => {
@@ -1756,11 +1853,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 TIMER_WINEVENT => {
                     // Debounced WinEvent burst: the window set changed.
                     let _ = KillTimer(hwnd, TIMER_WINEVENT);
-                    STATE.with_borrow_mut(|s| {
-                        if let Some(s) = s.as_mut() {
-                            refresh_buttons(s);
-                        }
-                    });
+                    refresh_buttons();
                     let _ = InvalidateRect(hwnd, None, false);
                 }
                 TIMER_WATCHDOG => {
@@ -1789,11 +1882,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     if rc.bottom != sh || rc.top != sh - height || wa.bottom != sh - height {
                         position_appbar(hwnd, height);
                     }
-                    STATE.with_borrow_mut(|s| {
-                        if let Some(s) = s.as_mut() {
-                            refresh_buttons(s);
-                        }
-                    });
+                    refresh_buttons();
                     let _ = InvalidateRect(hwnd, None, false);
                 }
                 _ => {}
@@ -1963,11 +2052,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         crate::tray::MSG_TRAY_CHANGED => {
-            STATE.with_borrow_mut(|s| {
-                if let Some(s) = s.as_mut() {
-                    refresh_buttons(s);
-                }
-            });
+            refresh_buttons();
             let _ = InvalidateRect(hwnd, None, false);
             LRESULT(0)
         }
@@ -1984,6 +2069,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 s.as_ref().map(|s| scaled(s.cfg.taskbar_height)).unwrap_or(scaled(40))
             });
             position_appbar(hwnd, height);
+            // Button layout depends on the bar width — recompute for the new
+            // resolution instead of waiting for the watchdog tick.
+            refresh_buttons();
+            let _ = InvalidateRect(hwnd, None, false);
             LRESULT(0)
         }
         APPBAR_CALLBACK => {
@@ -2002,6 +2091,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 ..Default::default()
             };
             SHAppBarMessage(ABM_REMOVE, &mut abd);
+            crate::taskman::release();
             // Give the reserved strip back (Explorer re-reserves its own once
             // its taskbar leaves auto-hide below).
             let (sw, sh) = screen_size();

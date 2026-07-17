@@ -23,6 +23,7 @@ mod settings_win;
 #[allow(dead_code)]
 mod winicon;
 mod winipc;
+mod winstyle;
 mod winplace;
 mod wlan;
 
@@ -94,6 +95,7 @@ fn build_ui(app: &adw::Application, open_flyout: bool, open_settings: bool) {
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+    winstyle::apply();
 
     let list = ListBox::new();
     list.set_selection_mode(SelectionMode::None);

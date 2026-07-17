@@ -16,6 +16,9 @@ mod appsource;
 mod icons;
 mod winipc;
 mod winplace;
+// Duplicated verbatim across the GTK helpers; each uses a different subset.
+#[allow(dead_code)]
+mod winstyle;
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -75,6 +78,7 @@ fn build_ui(app: &adw::Application) {
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+    winstyle::apply();
 
     let stack: Rc<RefCell<Vec<PathBuf>>> = Rc::new(RefCell::new(Vec::new()));
     let actions_pinned: Rc<RefCell<Vec<RowAction>>> = Rc::new(RefCell::new(Vec::new()));

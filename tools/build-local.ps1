@@ -76,7 +76,9 @@ if (-not $SkipHelpers) {
         # Sanity: a PE-compatible helper imports the MSYS2 DLL names.
         $imports = & $bash -lc "objdump -p '$repoUnix/target/ucrt64/release/$($h.Asset)' | grep 'DLL Name' | grep -i gtk" 2>$null
         if ($imports -notmatch 'libgtk-4-1\.dll') {
-            throw "$($h.Asset) does not import libgtk-4-1.dll (got: $imports) — wrong toolchain?"
+            # ASCII only in strings: PowerShell 5.1 reads this BOM-less UTF-8
+            # file as ANSI, and a multi-byte dash inside a string breaks parsing.
+            throw "$($h.Asset) does not import libgtk-4-1.dll (got: $imports) - wrong toolchain?"
         }
         Copy-Item $exe (Join-Path $dist $h.Asset)
     }

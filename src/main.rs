@@ -25,6 +25,7 @@ mod settings;
 mod start_menu;
 mod sysinfo;
 mod taskbar;
+mod taskman;
 mod tray;
 mod util;
 
@@ -146,6 +147,13 @@ fn main() -> windows::core::Result<()> {
     // and pick up the accent window border like any other window. Must run
     // *before* the single-instance guard below, since the real StartPE already
     // holds that mutex — these are separate, short-lived processes.
+    // Release builds abort on panic, which in a PE means the shell just
+    // vanishes with nothing to diagnose. Log the panic (message + location)
+    // before the abort so `X:\startpe.log` says why.
+    std::panic::set_hook(Box::new(|info| {
+        log(&format!("PANIC: {info}"));
+    }));
+
     let arg = |name: &str| std::env::args().skip(1).any(|a| a.eq_ignore_ascii_case(name));
     if arg("--sysinfo") || arg("--run") {
         unsafe {

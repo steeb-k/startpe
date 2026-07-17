@@ -19,7 +19,10 @@ updated when behavior or config values change.
  module: (1) `tray.rs`, the `Shell_NotifyIcon` WM_COPYDATA wire format (de-facto
  stable, used by every alternative shell); (2) `darkmode.rs`, the uxtheme
  dark-mode ordinals (build-gated, behind `DarkMenus`, fails closed to light
- menus). Keep any undocumented-ordinal work confined to its module; do not
+ menus); (3) `taskman.rs`, the `SetTaskmanWindow` claim that routes the
+ HSHELL_GETMINRECT minimize-animation query to StartPE (resolved dynamically,
+ fails soft to the default animation, previous holder restored on exit).
+ Keep any undocumented-ordinal work confined to its module; do not
  scatter such calls elsewhere. (The Run box is now `run_window.rs`, a from-
  scratch dark window built on documented APIs only — no ordinals.)
 - **`loader/` is the sandboxed exception.** `startpe_loader.dll` is loaded into
@@ -78,7 +81,8 @@ updated when behavior or config values change.
   popup menus), `darkmode.rs` (uxtheme dark app mode for shell menus),
   `border.rs` (accent window frame, no-DWM GDI overlay) and `dwm_border.rs`
   (accent frame for the DWM path via `DWMWA_BORDER_COLOR`, accent/gray by focus),
-  `run_window.rs` (from-scratch dark Run window), `settings.rs` (dark
+  `run_window.rs` (from-scratch dark Run window), `taskman.rs` (taskman-window
+  claim so minimize animates into the task button), `settings.rs` (dark
   settings pane: boolean config switches + Start button color picker, opened
   from the taskbar menu), `network.rs` (network status glyph polling + glue to
   the `Network.exe` helper), `config.rs` (registry), `util.rs` (UTF-16).
@@ -148,6 +152,11 @@ Gotchas when adding/maintaining a helper:
   that *should* get a button need a native icon: GDK's default is the generic
   GTK icon, so send `WM_SETICON` on the mapped HWND (`run-gtk/src/winicon.rs`,
   a port of `sysinfo::make_glyph_icon` — reuse it for new helpers).
+- **Windows-native look is a shared CSS layer.** Every helper calls
+  `winstyle::apply()` (a `winstyle.rs` duplicated verbatim per helper, like
+  `winicon.rs`): Segoe UI at 11pt, Win11 radii/window controls, and Adwaita's
+  `@accent_*` named colors redefined from `StartButtonColor`. Add it to any new
+  helper, and keep the copies identical when editing it.
 - **Resizable helpers should still clamp maximize.** Since v0.1.86 StartPE's
   taskbar reserves its strip via `SPI_SETWORKAREA` (the ABM_SETPOS appbar
   reservation is serviced by Explorer's tray, which StartPE hides and which is

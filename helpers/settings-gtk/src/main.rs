@@ -12,6 +12,7 @@ mod settings_io;
 // Duplicated verbatim across the GTK helpers; each uses a different subset.
 #[allow(dead_code)]
 mod winicon;
+mod winstyle;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -53,6 +54,7 @@ const TOGGLES: &[Toggle] = &[
 
 fn build_ui(app: &adw::Application) {
     adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
+    winstyle::apply();
 
     let settings = settings_io::load();
 
