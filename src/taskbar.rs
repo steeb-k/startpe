@@ -18,6 +18,7 @@ use windows::Win32::Globalization::{
 };
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::Storage::FileSystem::GetLogicalDrives;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::System::Threading::{
@@ -64,15 +65,6 @@ static WINEVENT_TASKBAR: AtomicIsize = AtomicIsize::new(0);
 /// dispatches incoming sent messages), where a `RefCell` borrow would panic.
 static SHELLHOOK_MSG: AtomicU32 = AtomicU32::new(0);
 static RELOAD_MSG: AtomicU32 = AtomicU32::new(0);
-
-/// `SHELLHOOKINFO` as delivered with HSHELL_GETMINRECT: the window being
-/// minimized/restored, plus the animation-target rect the handler fills in —
-/// four 16-bit screen coordinates (the legacy MINRECT layout, not a `RECT`).
-#[repr(C)]
-struct ShellHookInfo {
-    hwnd: HWND,
-    rc: [i16; 4],
-}
 
 // Colors are COLORREF values (0x00BBGGRR).
 pub const COL_BG: u32 = 0x00201F1F;
@@ -127,6 +119,10 @@ struct State {
     tray_icons: Vec<HICON>,
     /// Last polled connectivity state, drawn as the network glyph.
     net_status: crate::network::NetStatus,
+    /// Last-seen `GetLogicalDrives` bitmask, for the hot-plug poll (see
+    /// TIMER_WATCHDOG). Stripped PE often never broadcasts the volume
+    /// `WM_DEVICECHANGE`, so we diff this mask as a fallback.
+    last_drives: u32,
     /// Icons extracted from exe files (UWP fallback), keyed by exe path.
     /// Owned by us, kept for the process lifetime.
     icon_cache: HashMap<String, HICON>,
@@ -182,6 +178,7 @@ impl Taskbar {
                     pinned: crate::pins::Pins::load().taskbar,
                     tray_icons: Vec::new(),
                     net_status: crate::network::poll(),
+                    last_drives: GetLogicalDrives(),
                     icon_cache: HashMap::new(),
                     hover: Hit::None,
                     pressed: Hit::None,
@@ -1734,41 +1731,28 @@ fn draw_show_desktop(state: &State, hdc: HDC, width: i32, height: i32) {
 // ---------------------------------------------------------------------------
 // Window procedure
 
+/// Fan out one `SHChangeNotify` per drive letter set in `mask` (bit 0 = A:),
+/// telling the shell a volume was added or removed so open Explorer views and
+/// file dialogs refresh their drive lists. Shared by the `WM_DEVICECHANGE`
+/// fast path and the `TIMER_WATCHDOG` poll.
+unsafe fn notify_drives(id: SHCNE_ID, mask: u32) {
+    for bit in 0..26u32 {
+        if mask & (1 << bit) != 0 {
+            let root: [u16; 4] = [b'A' as u16 + bit as u16, b':' as u16, b'\\' as u16, 0];
+            SHChangeNotify(
+                id,
+                SHCNF_PATHW,
+                Some(root.as_ptr() as *const core::ffi::c_void),
+                None,
+            );
+        }
+    }
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // Custom (registered) shell hook message: window list changed.
     let shellhook = SHELLHOOK_MSG.load(Ordering::Relaxed);
     if shellhook != 0 && msg == shellhook {
-        // HSHELL_GETMINRECT: the system asks where a minimize/restore should
-        // animate to. Fill in the window's task-button rect (screen coords,
-        // packed as 16-bit shorts — the legacy MINRECT wire format every
-        // alternative shell uses) so windows shrink into their taskbar button
-        // instead of the bottom-left corner. Returning 0 (button unknown)
-        // leaves the default animation.
-        const HSHELL_GETMINRECT: usize = 5;
-        if wparam.0 & 0x7fff == HSHELL_GETMINRECT && lparam.0 != 0 {
-            let info = &mut *(lparam.0 as *mut ShellHookInfo);
-            let target = STATE.with_borrow(|s| {
-                s.as_ref().and_then(|s| {
-                    s.buttons
-                        .iter()
-                        .find(|b| b.windows.contains(&info.hwnd))
-                        .map(|b| b.rect)
-                })
-            });
-            if let Some(r) = target {
-                let mut bar = RECT::default();
-                let _ = GetWindowRect(hwnd, &mut bar);
-                let short = |v: i32| v.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-                info.rc = [
-                    short(bar.left + r.left),
-                    short(bar.top + r.top),
-                    short(bar.left + r.right),
-                    short(bar.top + r.bottom),
-                ];
-                return LRESULT(1);
-            }
-            return LRESULT(0);
-        }
         refresh_buttons();
         let _ = InvalidateRect(hwnd, None, false);
         return LRESULT(0);
@@ -1795,10 +1779,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 Ordering::Relaxed,
             );
             register_appbar(hwnd, height);
-            // Order matters: the taskman claim is what routes the
-            // HSHELL_GETMINRECT query (minimize-animation target) to us;
-            // RegisterShellHookWindow alone only delivers notifications.
-            crate::taskman::claim(hwnd);
+            // RegisterShellHookWindow delivers HSHELL_* window-list
+            // notifications (task-button add/remove). Minimize animation is
+            // left to the system default — StartPE deliberately does not claim
+            // the taskman slot (see git history: minimize-into-button removed).
             let _ = RegisterShellHookWindow(hwnd);
             // The shell hook alone reacts noticeably late to new windows (and
             // misses some transitions); a WinEvent hook for show/hide/destroy
@@ -1884,6 +1868,26 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     }
                     refresh_buttons();
                     let _ = InvalidateRect(hwnd, None, false);
+                    // Hot-plug drive fallback: stripped PE often never
+                    // broadcasts the volume WM_DEVICECHANGE, so diff the drive
+                    // bitmask ourselves and synthesize the same shell
+                    // notifications. Resolve the delta under the borrow, then
+                    // drop it before SHChangeNotify (message-pumping) fires.
+                    let cur = GetLogicalDrives();
+                    let (added, removed) = STATE.with_borrow_mut(|s| {
+                        s.as_mut().map_or((0, 0), |s| {
+                            let added = cur & !s.last_drives;
+                            let removed = s.last_drives & !cur;
+                            s.last_drives = cur;
+                            (added, removed)
+                        })
+                    });
+                    if added != 0 {
+                        notify_drives(SHCNE_DRIVEADD, added);
+                    }
+                    if removed != 0 {
+                        notify_drives(SHCNE_DRIVEREMOVED, removed);
+                    }
                 }
                 _ => {}
             }
@@ -1896,7 +1900,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             // volume is mounted or removed. In our PE builds Explorer never
             // builds its desktop, so nobody performs that conversion and drive
             // letters go stale on hot-plug. Do it here: decode the volume mask
-            // and fan out one SHChangeNotify per affected drive letter.
+            // and fan out one SHChangeNotify per affected drive letter. Note
+            // this broadcast is unreliable on stripped PE (the volume
+            // broadcaster may be absent) — the TIMER_WATCHDOG poll below is the
+            // real fallback; this is just the instant path where it does fire.
             let event = wparam.0 as u32;
             if (event == DBT_DEVICEARRIVAL || event == DBT_DEVICEREMOVECOMPLETE) && lparam.0 != 0 {
                 let hdr = &*(lparam.0 as *const DEV_BROADCAST_HDR);
@@ -1907,17 +1914,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     } else {
                         SHCNE_DRIVEREMOVED
                     };
-                    for bit in 0..26u32 {
-                        if vol.dbcv_unitmask & (1 << bit) != 0 {
-                            let root: [u16; 4] = [b'A' as u16 + bit as u16, b':' as u16, b'\\' as u16, 0];
-                            SHChangeNotify(
-                                id,
-                                SHCNF_PATHW,
-                                Some(root.as_ptr() as *const core::ffi::c_void),
-                                None,
-                            );
+                    notify_drives(id, vol.dbcv_unitmask);
+                    // Keep the poll baseline in sync so it doesn't re-fire.
+                    STATE.with_borrow_mut(|s| {
+                        if let Some(s) = s.as_mut() {
+                            s.last_drives = GetLogicalDrives();
                         }
-                    }
+                    });
                 }
             }
             // Return TRUE to grant any device-change query (we never veto).
@@ -2125,7 +2128,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 ..Default::default()
             };
             SHAppBarMessage(ABM_REMOVE, &mut abd);
-            crate::taskman::release();
             // Give the reserved strip back (Explorer re-reserves its own once
             // its taskbar leaves auto-hide below).
             let (sw, sh) = screen_size();

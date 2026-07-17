@@ -25,7 +25,6 @@ mod settings;
 mod start_menu;
 mod sysinfo;
 mod taskbar;
-mod taskman;
 mod tray;
 mod util;
 

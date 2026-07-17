@@ -19,12 +19,14 @@ updated when behavior or config values change.
  module: (1) `tray.rs`, the `Shell_NotifyIcon` WM_COPYDATA wire format (de-facto
  stable, used by every alternative shell); (2) `darkmode.rs`, the uxtheme
  dark-mode ordinals (build-gated, behind `DarkMenus`, fails closed to light
- menus); (3) `taskman.rs`, the `SetTaskmanWindow` claim that routes the
- HSHELL_GETMINRECT minimize-animation query to StartPE (resolved dynamically,
- fails soft to the default animation, previous holder restored on exit).
+ menus).
  Keep any undocumented-ordinal work confined to its module; do not
  scatter such calls elsewhere. (The Run box is now `run_window.rs`, a from-
  scratch dark window built on documented APIs only — no ordinals.)
+ (Minimize animation is left to the system default: StartPE used to claim the
+ taskman slot via `SetTaskmanWindow` to animate minimize into the task button,
+ but that never worked reliably on stripped PE — it fell back to the bottom-left
+ parking slot anyway — so `taskman.rs` was removed. Do not re-add it.)
 - **`loader/` is the sandboxed exception.** `startpe_loader.dll` is loaded into
  `explorer.exe` (via a `Drive\shellex\FolderExtensions` COM registration) to
  keep Explorer's shell thread alive past the Win11 taskbar init on PE sources
@@ -81,8 +83,7 @@ updated when behavior or config values change.
   popup menus), `darkmode.rs` (uxtheme dark app mode for shell menus),
   `border.rs` (accent window frame, no-DWM GDI overlay) and `dwm_border.rs`
   (accent frame for the DWM path via `DWMWA_BORDER_COLOR`, accent/gray by focus),
-  `run_window.rs` (from-scratch dark Run window), `taskman.rs` (taskman-window
-  claim so minimize animates into the task button), `settings.rs` (dark
+  `run_window.rs` (from-scratch dark Run window), `settings.rs` (dark
   settings pane: boolean config switches + Start button color picker, opened
   from the taskbar menu), `network.rs` (network status glyph polling + glue to
   the `Network.exe` helper), `config.rs` (registry), `util.rs` (UTF-16).
