@@ -79,6 +79,8 @@ jobs:
             asset: Settings.exe
           - dir: helpers/start-menu-gtk
             asset: StartMenu.exe
+          - dir: helpers/network-gtk
+            asset: Network.exe
     defaults:
       run:
         shell: msys2 {0}

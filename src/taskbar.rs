@@ -50,6 +50,8 @@ const TIMER_CLOCK: usize = 1;
 const TIMER_WATCHDOG: usize = 2;
 /// One-shot debounce for WinEvent-driven button refreshes (see `win_event_proc`).
 const TIMER_WINEVENT: usize = 4;
+/// Periodic network-status poll for the tray glyph (see `network.rs`).
+const TIMER_NETWORK: usize = 5;
 
 /// Taskbar HWND for the WinEvent callback (it must not touch `STATE`: events
 /// are delivered while pumping messages, so a borrow could already be live).
@@ -69,6 +71,8 @@ enum Hit {
     Start,
     Task(usize),
     TrayIcon(usize),
+    /// The built-in network status glyph (globe/wifi/ethernet), left of the clock.
+    Network,
     ShowDesktop,
 }
 
@@ -101,12 +105,15 @@ struct State {
     reload_msg: u32,
     font: HFONT,
     font_small: HFONT,
+    font_glyph: HFONT,
     buttons: Vec<TaskButton>,
     /// Pinned taskbar app exe paths (from PinUtil.ini), in pin order. Shown as
     /// buttons even when not running; clicking a not-running pin launches it.
     pinned: Vec<String>,
     /// Snapshot of visible tray icons (drawn left of the clock).
     tray_icons: Vec<HICON>,
+    /// Last polled connectivity state, drawn as the network glyph.
+    net_status: crate::network::NetStatus,
     /// Icons extracted from exe files (UWP fallback), keyed by exe path.
     /// Owned by us, kept for the process lifetime.
     icon_cache: HashMap<String, HICON>,
@@ -147,6 +154,7 @@ impl Taskbar {
 
             let font = make_font(scaled(15), 400);
             let font_small = make_font(scaled(12), 400);
+            let font_glyph = make_font_face(scaled(16), 400, w!("Segoe MDL2 Assets"));
             STATE.with_borrow_mut(|s| {
                 *s = Some(State {
                     cfg: cfg.clone(),
@@ -156,9 +164,11 @@ impl Taskbar {
                     reload_msg: 0,
                     font,
                     font_small,
+                    font_glyph,
                     buttons: Vec::new(),
                     pinned: crate::pins::Pins::load().taskbar,
                     tray_icons: Vec::new(),
+                    net_status: crate::network::poll(),
                     icon_cache: HashMap::new(),
                     hover: Hit::None,
                     pressed: Hit::None,
@@ -678,7 +688,10 @@ fn is_task_window(hwnd: HWND, own: HWND) -> bool {
         // GDK rewrites the ex-style from its own cached bits — so also exclude
         // it by its (StartPE-chosen, unique) title. GTK windows all share the
         // same class name, so the class list below can't catch just the menu.
-        if window_title(hwnd) == "StartPE Menu" {
+        // Same for the network helper's wifi flyout (its Network Settings
+        // window keeps a different title and *does* get a button).
+        let title = window_title(hwnd);
+        if title == "StartPE Menu" || title == "StartPE Network" {
             return false;
         }
         !matches!(
@@ -900,10 +913,31 @@ fn clock_rect(width: i32, height: i32) -> RECT {
     }
 }
 
+/// The built-in network status glyph, in the slot immediately left of the clock.
+fn net_icon_rect(width: i32, height: i32) -> RECT {
+    let right = clock_rect(width, height).left - scaled(4);
+    RECT {
+        left: right - scaled(TRAY_SLOT),
+        top: 0,
+        right,
+        bottom: height,
+    }
+}
+
+/// Right edge of the hosted tray icons: the network slot when it's shown,
+/// otherwise directly against the clock.
+fn tray_right_edge(width: i32, height: i32, net: bool) -> i32 {
+    if net {
+        net_icon_rect(width, height).left
+    } else {
+        clock_rect(width, height).left - scaled(4)
+    }
+}
+
 /// Rect of tray icon `i` out of `n`, laid out right-to-left from the clock.
-fn tray_icon_rect(i: usize, n: usize, width: i32, height: i32) -> RECT {
+fn tray_icon_rect(i: usize, n: usize, width: i32, height: i32, net: bool) -> RECT {
     let slot = scaled(TRAY_SLOT);
-    let right_edge = clock_rect(width, height).left - scaled(4);
+    let right_edge = tray_right_edge(width, height, net);
     let left = right_edge - (n as i32 - i as i32) * slot;
     RECT {
         left,
@@ -913,8 +947,8 @@ fn tray_icon_rect(i: usize, n: usize, width: i32, height: i32) -> RECT {
     }
 }
 
-fn tray_area_left(n: usize, width: i32, height: i32) -> i32 {
-    clock_rect(width, height).left - scaled(4) - n as i32 * scaled(TRAY_SLOT)
+fn tray_area_left(n: usize, width: i32, height: i32, net: bool) -> i32 {
+    tray_right_edge(width, height, net) - n as i32 * scaled(TRAY_SLOT)
 }
 
 fn client_size(hwnd: HWND) -> (i32, i32) {
@@ -1010,7 +1044,12 @@ fn refresh_buttons(state: &mut State) {
 
         let (width, height) = client_size(state.hwnd);
         state.tray_icons = crate::tray::snapshot();
-        let right_bound = tray_area_left(state.tray_icons.len(), width, height);
+        let right_bound = tray_area_left(
+            state.tray_icons.len(),
+            width,
+            height,
+            state.cfg.show_network_icon,
+        );
         let avail = (right_bound - scaled(8) - start_width(height) - scaled(4)).max(0);
         let n = buttons.len() as i32;
         let max_w = if state.cfg.show_labels {
@@ -1218,9 +1257,15 @@ fn hit_test(state: &State, x: i32, y: i32) -> Hit {
     }
     let n = state.tray_icons.len();
     for i in 0..n {
-        let r = tray_icon_rect(i, n, width, height);
+        let r = tray_icon_rect(i, n, width, height, state.cfg.show_network_icon);
         if x >= r.left && x < r.right {
             return Hit::TrayIcon(i);
+        }
+    }
+    if state.cfg.show_network_icon {
+        let r = net_icon_rect(width, height);
+        if x >= r.left && x < r.right {
+            return Hit::Network;
         }
     }
     let sd = show_desktop_rect(width, height);
@@ -1300,6 +1345,7 @@ fn paint(state: &State) {
         draw_start_button(state, mem, height);
         draw_task_buttons(state, mem);
         draw_tray(state, mem, width, height);
+        draw_network(state, mem, width, height);
         draw_clock(state, mem, width, height);
         draw_show_desktop(state, mem, width, height);
 
@@ -1484,7 +1530,7 @@ fn draw_tray(state: &State, hdc: HDC, width: i32, height: i32) {
     unsafe {
         let n = state.tray_icons.len();
         for (i, &icon) in state.tray_icons.iter().enumerate() {
-            let r = tray_icon_rect(i, n, width, height);
+            let r = tray_icon_rect(i, n, width, height, state.cfg.show_network_icon);
             if state.hover == Hit::TrayIcon(i) {
                 fill(hdc, &r, COL_HOVER);
             }
@@ -1504,6 +1550,32 @@ fn draw_tray(state: &State, hdc: HDC, width: i32, height: i32) {
                 DI_NORMAL,
             );
         }
+    }
+}
+
+/// The built-in network status glyph: globe (disconnected), wifi, or ethernet
+/// (ethernet wins when both are connected). Status is polled on
+/// `TIMER_NETWORK`; clicking opens the wifi flyout of the network helper.
+fn draw_network(state: &State, hdc: HDC, width: i32, height: i32) {
+    if !state.cfg.show_network_icon {
+        return;
+    }
+    unsafe {
+        let mut r = net_icon_rect(width, height);
+        if state.hover == Hit::Network {
+            fill(hdc, &r, COL_HOVER);
+        }
+        SetTextColor(hdc, COLORREF(COL_TEXT));
+        let old_font = SelectObject(hdc, state.font_glyph);
+        let mut glyph = util::wide(&state.net_status.glyph().to_string());
+        glyph.pop();
+        DrawTextW(
+            hdc,
+            &mut glyph,
+            &mut r,
+            DT_SINGLELINE | DT_CENTER | DT_VCENTER,
+        );
+        SelectObject(hdc, old_font);
     }
 }
 
@@ -1648,6 +1720,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             );
             SetTimer(hwnd, TIMER_CLOCK, 1000, None);
             SetTimer(hwnd, TIMER_WATCHDOG, 3000, None);
+            SetTimer(hwnd, TIMER_NETWORK, 3000, None);
             STATE.with_borrow_mut(|s| refresh_buttons(s.as_mut().unwrap()));
             LRESULT(0)
         }
@@ -1657,6 +1730,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     let (w, h) = client_size(hwnd);
                     let rect = clock_rect(w, h);
                     let _ = InvalidateRect(hwnd, Some(&rect), false);
+                }
+                TIMER_NETWORK => {
+                    let status = crate::network::poll();
+                    let changed = STATE.with_borrow_mut(|s| {
+                        s.as_mut().is_some_and(|s| {
+                            let changed = s.net_status != status;
+                            s.net_status = status;
+                            changed && s.cfg.show_network_icon
+                        })
+                    });
+                    if changed {
+                        let (w, h) = client_size(hwnd);
+                        let rect = net_icon_rect(w, h);
+                        let _ = InvalidateRect(hwnd, Some(&rect), false);
+                    }
                 }
                 TIMER_PEEK => {
                     let _ = KillTimer(hwnd, TIMER_PEEK);
@@ -1788,6 +1876,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 Group(Vec<HWND>),
                 Launch(String),
                 Tray(usize),
+                Network,
                 ShowDesktop,
             }
             // Resolve the action inside the borrow, perform it outside: the
@@ -1810,6 +1899,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                         None => Click::None,
                     },
                     Hit::TrayIcon(i) => Click::Tray(i),
+                    Hit::Network => Click::Network,
                     Hit::ShowDesktop => Click::ShowDesktop,
                     Hit::None => Click::None,
                 }
@@ -1820,6 +1910,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 Click::Group(windows) => activate_group(&windows),
                 Click::Launch(exe) => launch_path(&exe),
                 Click::Tray(i) => crate::tray::click(i, false),
+                Click::Network => crate::network::toggle_flyout(),
                 Click::ShowDesktop => toggle_show_desktop(),
                 Click::None => {}
             }
@@ -1834,12 +1925,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             enum RClick {
                 None,
                 Tray(usize),
+                Network,
                 Menu,
                 WinX,
             }
             let action = STATE.with_borrow(|s| {
                 s.as_ref().map_or(RClick::None, |s| match hit_test(s, x, y) {
                     Hit::TrayIcon(i) => RClick::Tray(i),
+                    Hit::Network => RClick::Network,
                     Hit::Start => RClick::WinX,
                     Hit::None => RClick::Menu,
                     _ => RClick::None,
@@ -1847,6 +1940,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             });
             match action {
                 RClick::Tray(i) => crate::tray::click(i, true),
+                RClick::Network => crate::network::open_settings(),
                 RClick::Menu => show_taskbar_menu(hwnd),
                 RClick::WinX => show_winx_menu(hwnd, false),
                 RClick::None => {}

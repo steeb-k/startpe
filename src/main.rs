@@ -17,6 +17,7 @@ mod darkmode;
 mod desktop;
 mod dwm_border;
 mod menu;
+mod network;
 mod peek;
 mod run_window;
 mod pins;
@@ -212,6 +213,9 @@ fn main() -> windows::core::Result<()> {
         // present); `start_menu::toggle()` then drives it, with the GDI menu above
         // as the fallback.
         start_menu::launch_helper();
+        // Pre-warm the GTK network helper too (wifi flyout + Network Settings);
+        // it applies a dropped network-profile.ini on this first launch.
+        network::launch_helper();
         tray::create(taskbar.hwnd)?;
         taskbar::install_win_key_hook();
         alttab::install();

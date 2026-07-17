@@ -80,7 +80,8 @@ updated when behavior or config values change.
   (accent frame for the DWM path via `DWMWA_BORDER_COLOR`, accent/gray by focus),
   `run_window.rs` (from-scratch dark Run window), `settings.rs` (dark
   settings pane: boolean config switches + Start button color picker, opened
-  from the taskbar menu), `config.rs` (registry), `util.rs` (UTF-16).
+  from the taskbar menu), `network.rs` (network status glyph polling + glue to
+  the `Network.exe` helper), `config.rs` (registry), `util.rs` (UTF-16).
 - New user-facing settings: add to `config.rs` (registry value under
   `HKCU\Software\StartPE`), document in the `docs/ARCHITECTURE.md` table, and
   write the default in `pebakery/StartPE.script`. All three, every time. If the
@@ -108,7 +109,8 @@ target to run on) — don't add an aarch64 target, CI matrix entry, or
 
 `helpers/` holds the GTK4/Libadwaita shell helpers (`helpers/sysinfo-gtk` →
 `SystemInfo.exe`, `helpers/run-gtk` → `RunBox.exe`, `helpers/settings-gtk` →
-`Settings.exe`, `helpers/start-menu-gtk` → `StartMenu.exe`). They are **excluded
+`Settings.exe`, `helpers/start-menu-gtk` → `StartMenu.exe`, `helpers/network-gtk`
+→ `Network.exe`). They are **excluded
 from the MSVC workspace** and
 build with the **MSYS2 ucrt64** toolchain + the shipped GTK runtime, not with the
 commands above — build them separately (`cd helpers/sysinfo-gtk && cargo build

@@ -56,6 +56,10 @@ pub struct Config {
     /// Draw an accent-colored frame around the foreground (non-maximized)
     /// window, in the Start-button color. Default on. See `border.rs`.
     pub window_borders: bool,
+    /// Show the built-in network status glyph (globe/wifi/ethernet) left of
+    /// the clock. Default on. Clicking it drives the `Network.exe` helper's
+    /// wifi flyout. See `network.rs`.
+    pub show_network_icon: bool,
     /// Re-launch StartPE as SYSTEM (via `syslaunch.exe`, sibling to the exe) when
     /// it finds itself running under a lesser token, so it ends up SYSTEM no
     /// matter which vector started it (Run key, loader, autorun). Set to 1 by the
@@ -89,6 +93,7 @@ impl Default for Config {
             start_button_color: 0x00E6_5AB4,
             dark_menus: true,
             window_borders: true,
+            show_network_icon: true,
             launch_as_system: false,
             file_manager: None,
         }
@@ -158,6 +163,9 @@ impl Config {
         }
         if let Ok(v) = key.get_value::<u32, _>("WindowBorders") {
             self.window_borders = v != 0;
+        }
+        if let Ok(v) = key.get_value::<u32, _>("ShowNetworkIcon") {
+            self.show_network_icon = v != 0;
         }
         if let Ok(v) = key.get_value::<u32, _>("LaunchAsSystem") {
             self.launch_as_system = v != 0;
@@ -241,6 +249,25 @@ pub fn settings_app() -> Option<String> {
     for hive in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
         if let Ok(key) = RegKey::predef(hive).open_subkey(KEY) {
             if let Ok(v) = key.get_value::<String, _>("SettingsApp") {
+                if !v.trim().is_empty() {
+                    app = Some(v);
+                }
+            }
+        }
+    }
+    app
+}
+
+/// Path to an external Network app — the GTK4/Libadwaita `Network.exe` helper
+/// (wifi flyout + Network Settings) — if one is configured under `NetworkApp`.
+/// Same HKLM→HKCU read and override semantics as [`sysinfo_app`]: by default
+/// StartPE auto-detects a sibling `Network.exe`, so this override is only
+/// needed to point elsewhere. See `network::launch_helper`.
+pub fn network_app() -> Option<String> {
+    let mut app = None;
+    for hive in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
+        if let Ok(key) = RegKey::predef(hive).open_subkey(KEY) {
+            if let Ok(v) = key.get_value::<String, _>("NetworkApp") {
                 if !v.trim().is_empty() {
                     app = Some(v);
                 }

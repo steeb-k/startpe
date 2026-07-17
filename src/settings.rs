@@ -73,6 +73,13 @@ const TOGGLES: &[Toggle] = &[
         restart: false,
     },
     Toggle {
+        group: "Taskbar",
+        label: "Show network icon",
+        reg: "ShowNetworkIcon",
+        get: |c| c.show_network_icon,
+        restart: false,
+    },
+    Toggle {
         group: "Windows",
         label: "Accent border on active window",
         reg: "WindowBorders",

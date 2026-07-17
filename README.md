@@ -70,6 +70,23 @@ Two start menus ship; both float above the taskbar and follow its alignment.
   picker, applied live via a registered message to the running shell — or the
   built-in dark, owner-drawn GDI pane with the same options.
 
+### Networking
+- A built-in **network status glyph** next to the clock — wireframe globe when
+  nothing is connected, a wifi symbol on wireless, an ethernet symbol on wired
+  (ethernet wins when both are up) — polled via documented `GetAdaptersAddresses`
+  (`ShowNetworkIcon`, opt-out).
+- Clicking it opens the GTK4/Libadwaita **wifi flyout** (`Network.exe`),
+  Windows 11-style: available networks with signal strength, inline security-key
+  entry on the network you pick, and a live status line while it connects
+  (needs the WinPE WLAN stack — `wlansvc` + wifi drivers — in the image;
+  degrades to status-only without it).
+- **Network settings…** at the flyout's bottom (or right-clicking the glyph)
+  opens the full **Network Settings** window: per-adapter DHCP/static IPv4 +
+  DNS, and **export/import of the whole setup** — adapter config plus saved
+  wireless networks (keys included) — as a `network-profile.ini` dropped next
+  to `startpe.exe`, applied automatically at shell startup (bake one into the
+  PE image the same way as `desktop-layout.txt`).
+
 ### Window switching & hotkeys
 - **Accent border on the active window** (`WindowBorders`, opt-out) — a thin
   frame in the Start-button accent color around the foreground window. With DWM
@@ -141,7 +158,7 @@ cargo build --release --workspace   # x64: startpe.exe + startpe_loader.dll + sy
 ```
 
 The GTK helpers under `helpers/` (`StartMenu.exe`, `RunBox.exe`, `Settings.exe`,
-`SystemInfo.exe`) are excluded from the MSVC workspace; release binaries are
+`SystemInfo.exe`, `Network.exe`) are excluded from the MSVC workspace; release binaries are
 built by CI with the MSYS2 ucrt64 toolchain and attached to the same GitHub
 release. `startpe.exe` auto-detects them as siblings at runtime — no helper, no
 GTK dependency.

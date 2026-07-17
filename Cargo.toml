@@ -4,11 +4,11 @@ members = ["loader", "syslaunch"]
 # MSYS2 ucrt64 (gnu) toolchain + the GTK runtime, not this MSVC workspace — so they
 # are excluded from `cargo build --workspace` and built by a separate CI job. They
 # ship in the same release and `startpe.exe` auto-detects them as siblings.
-exclude = ["helpers/sysinfo-gtk", "helpers/run-gtk", "helpers/settings-gtk", "helpers/start-menu-gtk"]
+exclude = ["helpers/sysinfo-gtk", "helpers/run-gtk", "helpers/settings-gtk", "helpers/start-menu-gtk", "helpers/network-gtk"]
 
 [package]
 name = "startpe"
-version = "0.1.88"
+version = "0.1.89"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Free, open-source taskbar and start menu for Windows PE environments"
@@ -29,6 +29,9 @@ features = [
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_GdiPlus",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
     "Win32_Storage_FileSystem",
     "Win32_Storage_Xps",
     "Win32_Security",

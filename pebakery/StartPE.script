@@ -17,7 +17,7 @@ Author=steeb-k
 Level=3
 Selected=True
 Mandatory=False
-Version=0.1.88.0
+Version=0.1.89.0
 Date=2026-07-17
 
 [Variables]
@@ -38,6 +38,10 @@ Date=2026-07-17
 %SettingsX64%=Settings.exe
 // Optional GTK4/Libadwaita Start menu helper. Same sibling auto-detect.
 %StartMenuX64%=StartMenu.exe
+// Optional GTK4/Libadwaita network manager (wifi flyout + Network Settings).
+// Same sibling auto-detect; absent, the taskbar network glyph still shows
+// status but has no flyout.
+%NetworkX64%=Network.exe
 // COM CLSID used to get the loader pulled into Explorer at shell startup.
 %LoaderCLSID%={6F3D9B2A-1C4E-4E7A-9B58-2E1D7C0A5F31}
 // Base URL for release builds; the binary name is appended.
@@ -62,6 +66,7 @@ If,%SourceArch%,Equal,x64,Begin
   Set,%RunBoxName%,%RunBoxX64%
   Set,%SettingsName%,%SettingsX64%
   Set,%StartMenuName%,%StartMenuX64%
+  Set,%NetworkName%,%NetworkX64%
 End
 Else,Halt,"StartPE ERROR: Unsupported processor architecture [%SourceArch%] (StartPE is x64-only)."
 
@@ -95,6 +100,12 @@ End
 If,Not,%StartMenuName%,Equal,"",Begin
   If,Not,ExistFile,"%ProgramsCache%\%ProgramFolder%\%StartMenuName%",WebGet,"%DownloadURL%%StartMenuName%","%ProgramsCache%\%ProgramFolder%\%StartMenuName%",NOERR
   If,ExistFile,"%ProgramsCache%\%ProgramFolder%\%StartMenuName%",FileCopy,"%ProgramsCache%\%ProgramFolder%\%StartMenuName%","%TargetPrograms%\%ProgramFolder%\%StartMenuName%"
+End
+
+// Optional GTK network manager: download if missing, copy when present. Non-fatal.
+If,Not,%NetworkName%,Equal,"",Begin
+  If,Not,ExistFile,"%ProgramsCache%\%ProgramFolder%\%NetworkName%",WebGet,"%DownloadURL%%NetworkName%","%ProgramsCache%\%ProgramFolder%\%NetworkName%",NOERR
+  If,ExistFile,"%ProgramsCache%\%ProgramFolder%\%NetworkName%",FileCopy,"%ProgramsCache%\%ProgramFolder%\%NetworkName%","%TargetPrograms%\%ProgramFolder%\%NetworkName%"
 End
 
 Run,%ScriptFile%,Config
@@ -244,6 +255,16 @@ RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","ShowSystemDesktopIcons",0
 // desktop-layout.txt next to startpe.exe. StartPE writes it as you arrange
 // icons; drop the captured file next to this script to bake those positions in.
 If,ExistFile,"%ScriptDir%\desktop-layout.txt",FileCopy,"%ScriptDir%\desktop-layout.txt","%TargetPrograms%\%ProgramFolder%\desktop-layout.txt"
+
+// Network status glyph (globe / wifi / ethernet) in the taskbar, left of the
+// clock. 1 = shown (default), 0 = hidden. Clicking it opens the Network.exe
+// wifi flyout; right-click opens Network Settings.
+RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","ShowNetworkIcon",1
+
+// Saved network setup: export one from Network Settings (adapter IPv4 config +
+// saved wireless networks incl. keys) as network-profile.ini, then drop the
+// file next to this script to bake it in. StartPE applies it at shell startup.
+If,ExistFile,"%ScriptDir%\network-profile.ini",FileCopy,"%ScriptDir%\network-profile.ini","%TargetPrograms%\%ProgramFolder%\network-profile.ini"
 
 // Quiet down the Win11 taskbar Explorer would otherwise populate.
 // (StartPE hides the window itself; these just avoid wasted work at logon.)

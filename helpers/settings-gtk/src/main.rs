@@ -46,6 +46,7 @@ const TOGGLES: &[Toggle] = &[
     Toggle { group: "Taskbar", label: "Show window labels", reg: "TaskbarLabels", get: |s| s.show_labels, restart: false },
     Toggle { group: "Taskbar", label: "Combine taskbar buttons", reg: "TaskbarCombine", get: |s| s.combine, restart: false },
     Toggle { group: "Taskbar", label: "Center taskbar", reg: "CenterTaskbar", get: |s| s.center_taskbar, restart: false },
+    Toggle { group: "Taskbar", label: "Show network icon", reg: "ShowNetworkIcon", get: |s| s.show_network_icon, restart: false },
     Toggle { group: "Windows", label: "Accent border on active window", reg: "WindowBorders", get: |s| s.window_borders, restart: false },
     Toggle { group: "Menus", label: "Dark context menus", reg: "DarkMenus", get: |s| s.dark_menus, restart: true },
 ];

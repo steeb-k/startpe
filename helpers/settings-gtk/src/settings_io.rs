@@ -22,6 +22,7 @@ pub struct Settings {
     pub show_labels: bool,
     pub combine: bool,
     pub center_taskbar: bool,
+    pub show_network_icon: bool,
     pub window_borders: bool,
     pub dark_menus: bool,
     pub start_color: u32, // COLORREF 0x00BBGGRR
@@ -44,6 +45,7 @@ pub fn load() -> Settings {
         show_labels: read_u32("TaskbarLabels", 0) != 0,
         combine: read_u32("TaskbarCombine", 1) != 0,
         center_taskbar: read_u32("CenterTaskbar", 1) != 0,
+        show_network_icon: read_u32("ShowNetworkIcon", 1) != 0,
         window_borders: read_u32("WindowBorders", 1) != 0,
         dark_menus: read_u32("DarkMenus", 1) != 0,
         start_color: read_u32("StartButtonColor", 0x00E6_5AB4),

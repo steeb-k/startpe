@@ -78,6 +78,15 @@ Rendering is plain GDI into a double buffer. No UI framework; the binary is
   caret)
 - `src/peek.rs` — taskbar-button hover previews (DWM thumbnails where available,
   icon/title rows otherwise)
+- `src/network.rs` — network status for the taskbar's built-in glyph (globe /
+  wifi / ethernet, polled via the documented `GetAdaptersAddresses`) and glue to
+  the GTK network manager `Network.exe` (`helpers/network-gtk/`): pre-warmed at
+  startup (applying a dropped `network-profile.ini` once per session) and driven
+  by the glyph's clicks via the registered `StartPE_ToggleNetworkFlyout`
+  message. The helper owns everything interactive: the Win11-style wifi flyout
+  (`wlanapi` scan/connect with inline key entry and a polled status line — needs
+  the WinPE WLAN stack: `wlansvc` + drivers) and the Network Settings window
+  (per-adapter DHCP/static IPv4 + DNS via `netsh`, profile export/import)
 - `src/menu.rs` — dark, rounded, **custom-drawn** popup menus. A system
   `TrackPopupMenu` can't get rounded corners without DWM (absent in PE) and its
   owner-drawn separators still take mouse highlight, so each menu level is its
@@ -227,6 +236,8 @@ Current values (all `REG_DWORD`):
 | `RunApp` | _(unset)_ | Optional **override** path to the GTK Run helper. By default StartPE auto-detects a sibling `RunBox.exe`; set this only to point elsewhere. Unset **and** no sibling = the built-in GDI Run box. Launched for every Run entry point (Win+R, start menu Run…, Win+X). Not written by `StartPE.script` (see `run_window::gtk_helper`) |
 | `SettingsApp` | _(unset)_ | Optional **override** path to the GTK Settings helper. By default StartPE auto-detects a sibling `Settings.exe`; set this only to point elsewhere. Unset **and** no sibling = the built-in GDI pane. The helper writes the same `HKCU` values and posts `StartPE_ReloadConfig` for live apply. Not written by `StartPE.script` (see `settings::gtk_helper`) |
 | `StartMenuApp` | _(unset)_ | Optional **override** path to the GTK Start menu helper. By default StartPE auto-detects a sibling `StartMenu.exe` and pre-warms it (hidden) at startup; `start_menu::toggle()` then drives it via the registered `StartPE_ToggleStartMenu` message (Win key / start button), with the built-in GDI menu as fallback when it (or the GTK runtime) is absent. Not written by `StartPE.script` (see `start_menu::launch_helper`) |
+| `ShowNetworkIcon` | 1 | 1 = draw the built-in network status glyph (wireframe globe = disconnected, wifi, ethernet; ethernet wins when both are up) in the slot left of the clock; 0 = hide it. Status polled every 3 s via `GetAdaptersAddresses`. Left-click toggles the `Network.exe` wifi flyout, right-click opens its Network Settings window (see `network.rs`) |
+| `NetworkApp` | _(unset)_ | Optional **override** path to the GTK network manager. By default StartPE auto-detects a sibling `Network.exe` and pre-warms it (hidden) at startup — with `--apply-profile` when a `network-profile.ini` sits next to the exe, so a baked/dropped network setup is applied once per session. The taskbar glyph drives it via the registered `StartPE_ToggleNetworkFlyout` message (WPARAM 0 = flyout, 1 = settings). No GDI fallback: without the helper the glyph still shows status but has no flyout. Not written by `StartPE.script` (see `network::launch_helper`) |
 | `TerminalApp` | _(unset)_ | Terminal command for every "Terminal" surface (Win+X → Terminal, both start menus' Terminal link). Unset falls back to `%ComSpec%`, then `cmd.exe`. Set it from the terminal's own PE component (like `FileManager`), not `StartPE.script`. Windows' "default terminal application" setting cannot be honored: it only redirects conhost hosting on a full desktop and its delegation plumbing doesn't exist in PE (see `config::terminal_command`) |
 
 Launch: the PEBakery script writes the Run key for classic logon flows and
