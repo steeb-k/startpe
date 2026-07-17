@@ -27,8 +27,7 @@ use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use gtk::{glib, Align, Box as GtkBox, Button, EventControllerKey, Image, Label, ListBox,
-    ListBoxRow, Orientation, Popover, PolicyType, ScrolledWindow, SearchEntry, SelectionMode,
-    Separator};
+    ListBoxRow, Orientation, Popover, PolicyType, ScrolledWindow, SearchEntry, SelectionMode};
 
 use windows::core::w;
 use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
@@ -41,8 +40,7 @@ const APP_ID: &str = "org.winrx.PeStartMenu";
 const CSS: &str = "
 .sm-right {
   background-color: @sidebar_bg_color;
-  border-top-right-radius: 12px;
-  border-bottom-right-radius: 12px;
+  border-radius: 12px;
 }
 .sm-list { background: transparent; }
 .sm-list row { border-radius: 8px; }
@@ -232,7 +230,6 @@ fn build_ui(app: &adw::Application) {
 
     let panes = GtkBox::new(Orientation::Horizontal, 0);
     panes.append(&left);
-    panes.append(&Separator::new(Orientation::Vertical));
     panes.append(&right);
     window.set_content(Some(&panes));
 
