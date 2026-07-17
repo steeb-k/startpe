@@ -121,14 +121,25 @@ binary never depends on the GTK runtime). Keep `startpe.exe` itself free of any
 GTK/runtime dependency.
 
 Gotchas when adding/maintaining a helper:
-- **Helpers DO build locally** — with the normal MSVC toolchain against the
-  gvsbuild GTK stack in `C:\gtk` (persisted user env: `PKG_CONFIG_PATH=C:\gtk\lib\pkgconfig`,
-  `LIB=C:\gtk\lib`, `C:\gtk\bin` on PATH): `cd helpers/<name> && cargo build --release`.
-  Use that to compile-check and look-test GTK changes before pushing. But
-  **release binaries still come from CI** (MSYS2 ucrt64 job): local MSVC builds
-  link gvsbuild DLL names (`gtk-4-1.dll`), while the PE ships winrx-creator's
-  MSYS2 runtime (`libgtk-4-1.dll`) — a locally built exe won't run in the PE.
-  (`C:\gtk-msys2-x64` is a copy of that runtime prefix — no compiler in it.)
+- **Helpers DO build locally**, two ways with different purposes:
+  1. **Quick compile/look-test**: the normal MSVC toolchain against the
+     gvsbuild GTK stack in `C:\gtk` (persisted user env:
+     `PKG_CONFIG_PATH=C:\gtk\lib\pkgconfig`, `LIB=C:\gtk\lib`, `C:\gtk\bin` on
+     PATH): `cd helpers/<name> && cargo build --release`. These exes link
+     gvsbuild DLL names (`gtk-4-1.dll`) and **won't run in the PE**, which
+     ships winrx-creator's MSYS2 runtime (`libgtk-4-1.dll`). (`C:\gtk-msys2-x64`
+     is a copy of that runtime prefix — no compiler in it.)
+  2. **PE-compatible local release**: `tools\build-local.ps1` builds the MSVC
+     workspace *and* every helper with the local **MSYS2 ucrt64** toolchain
+     (`C:\msys64`, same packages as CI), verifies the MSYS2 DLL imports, and
+     stages release-named assets in `dist\`. `-Deploy` copies them into
+     winrx-creator's Programs cache
+     (`D:\winrx-creator\Workbench\winrx-creator\Programs\StartPE`), which the
+     PEBakery script prefers over downloading — so a PE rebuild uses the local
+     binaries with no tag/release round-trip. MSYS2 helper artifacts live in
+     `target/ucrt64/` per helper so they never mix with the MSVC target dir.
+  GitHub **release assets still come from CI** (tag push) — use that for
+  anything users download; the local pipeline is for iteration speed.
 - **GTK windows and StartPE's own taskbar/Alt+Tab.** All GTK4 toplevels share
   one window class, and GDK caches ex-style bits — a `WS_EX_TOOLWINDOW` set from
   the helper can race the taskbar's enumeration or be rewritten by GDK. A helper
