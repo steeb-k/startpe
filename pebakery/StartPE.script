@@ -17,7 +17,7 @@ Author=steeb-k
 Level=3
 Selected=True
 Mandatory=False
-Version=0.1.90.0
+Version=0.1.90.1
 Date=2026-07-17
 
 [Variables]
@@ -253,8 +253,13 @@ RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","ShowSystemDesktopIcons",0
 
 // Desktop icon layout: positions are stored as x,y,Name lines in
 // desktop-layout.txt next to startpe.exe. StartPE writes it as you arrange
-// icons; drop the captured file next to this script to bake those positions in.
-If,ExistFile,"%ScriptDir%\desktop-layout.txt",FileCopy,"%ScriptDir%\desktop-layout.txt","%TargetPrograms%\%ProgramFolder%\desktop-layout.txt"
+// icons. Pick your captured file under "Baked-in Files" in the interface, or
+// drop a copy next to this script — the picked file wins.
+If,Not,"%fb_DesktopLayout%",Equal,"",Begin
+  If,ExistFile,"%fb_DesktopLayout%",FileCopy,"%fb_DesktopLayout%","%TargetPrograms%\%ProgramFolder%\desktop-layout.txt"
+  If,Not,ExistFile,"%fb_DesktopLayout%",Echo,"StartPE: selected desktop layout [%fb_DesktopLayout%] not found - skipped.",WARN
+End
+Else,If,ExistFile,"%ScriptDir%\desktop-layout.txt",FileCopy,"%ScriptDir%\desktop-layout.txt","%TargetPrograms%\%ProgramFolder%\desktop-layout.txt"
 
 // Network status glyph (globe / wifi / ethernet) in the taskbar, left of the
 // clock. 1 = shown (default), 0 = hidden. Clicking it opens the Network.exe
@@ -262,9 +267,14 @@ If,ExistFile,"%ScriptDir%\desktop-layout.txt",FileCopy,"%ScriptDir%\desktop-layo
 RegWrite,HKLM,REG_DWORD,"Tmp_Software\StartPE","ShowNetworkIcon",1
 
 // Saved network setup: export one from Network Settings (adapter IPv4 config +
-// saved wireless networks incl. keys) as network-profile.ini, then drop the
-// file next to this script to bake it in. StartPE applies it at shell startup.
-If,ExistFile,"%ScriptDir%\network-profile.ini",FileCopy,"%ScriptDir%\network-profile.ini","%TargetPrograms%\%ProgramFolder%\network-profile.ini"
+// saved wireless networks incl. keys) as network-profile.ini. Pick it under
+// "Baked-in Files" in the interface, or drop a copy next to this script — the
+// picked file wins. StartPE applies it at shell startup.
+If,Not,"%fb_NetworkProfile%",Equal,"",Begin
+  If,ExistFile,"%fb_NetworkProfile%",FileCopy,"%fb_NetworkProfile%","%TargetPrograms%\%ProgramFolder%\network-profile.ini"
+  If,Not,ExistFile,"%fb_NetworkProfile%",Echo,"StartPE: selected network profile [%fb_NetworkProfile%] not found - skipped.",WARN
+End
+Else,If,ExistFile,"%ScriptDir%\network-profile.ini",FileCopy,"%ScriptDir%\network-profile.ini","%TargetPrograms%\%ProgramFolder%\network-profile.ini"
 
 // Quiet down the Win11 taskbar Explorer would otherwise populate.
 // (StartPE hides the window itself; these just avoid wasted work at logon.)
@@ -310,6 +320,8 @@ WriteInterface,Value,%ScriptFile%,Interface,cb_TaskbarCombine,True
 WriteInterface,Value,%ScriptFile%,Interface,cb_CenterTaskbar,True
 WriteInterface,Value,%ScriptFile%,Interface,nb_MenuWidth,420
 WriteInterface,Value,%ScriptFile%,Interface,nb_MenuHeight,360
+WriteInterface,Value,%ScriptFile%,Interface,fb_DesktopLayout,""
+WriteInterface,Value,%ScriptFile%,Interface,fb_NetworkProfile,""
 System,Cursor,Normal
 
 [#ShowScriptInfo#]
@@ -336,6 +348,12 @@ nb_MenuWidth=,1,2,370,108,55,22,420,300,800,10
 lbl_MenuHeight="Menu height:",1,1,440,113,68,18,8,Normal
 nb_MenuHeight=,1,2,512,108,55,22,480,360,900,10
 lbl_UserPic="User picture: place a square UserPicture.bmp next to this script to replace the default silhouette on the start menu.",1,1,300,140,295,40,8,Normal
+bvl_BakedFiles="Baked-in Files",1,12,5,250,597,115,8,Bold
+lbl_BakedFiles="Baked in next to startpe.exe at build time. Leave empty to use a copy dropped next to this script (if present).",1,1,16,272,575,18,8,Normal
+lbl_DesktopLayout="Desktop layout:",1,1,16,300,88,18,8,Normal
+fb_DesktopLayout=,1,13,108,296,477,22,file,"Title=Select your saved desktop-layout.txt","Filter=desktop-layout.txt|desktop-layout.txt|Text files (*.txt)|*.txt|All files (*.*)|*.*"
+lbl_NetworkProfile="Network profile:",1,1,16,328,88,18,8,Normal
+fb_NetworkProfile=,1,13,108,324,477,22,file,"Title=Select your exported network-profile.ini","Filter=network-profile.ini|network-profile.ini|INI files (*.ini)|*.ini|All files (*.*)|*.*"
 
 [InterfaceEncoded]
 VistalcoDownload_16.png=927,1348
