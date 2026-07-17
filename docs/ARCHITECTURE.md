@@ -242,7 +242,10 @@ that is not implemented yet.
 - **M1 (mostly done): system tray.** `src/tray.rs` creates our own
   `Shell_TrayWnd` (+ `TrayNotifyWnd` child), parses `Shell_NotifyIcon`
   WM_COPYDATA registrations (32-bit NOTIFYICONDATA wire layout), broadcasts
-  `TaskbarCreated` so running apps re-register, draws icons left of the
+  `TaskbarCreated` so running apps re-register (once at startup, then
+  re-broadcast every 3 s for ~15 s — apps launched back-to-back with StartPE,
+  like PENetwork in the PE scripts, can register before our tray exists or
+  miss a single broadcast fired before their window is up), draws icons left of the
   clock, and forwards clicks (v0 and NOTIFYICON_VERSION_4 packing). Unhandled
   copy-data (appbar protocol) is proxied to Explorer's tray; NIM traffic is
   mirrored there too so Explorer stays consistent if StartPE exits.

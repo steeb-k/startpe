@@ -12,7 +12,10 @@
 //! Explorer's real tray window, so the appbar protocol keeps working while
 //! Explorer is the shell. On startup we broadcast the registered
 //! `TaskbarCreated` message so already-running applications re-register
-//! their icons with us.
+//! their icons with us — and re-broadcast it a few times over the first
+//! seconds, because apps launched back-to-back with StartPE (PENetwork in
+//! the PE scripts) can call `Shell_NotifyIcon` before this window exists
+//! and miss a single broadcast fired before their message window is up.
 //!
 //! The NOTIFYICONDATA in the COPYDATASTRUCT uses the 32-bit layout (handles
 //! as u32) regardless of architecture — it is a cross-bitness wire format.
@@ -76,7 +79,14 @@ struct TrayState {
     /// Explorer's tray, for proxying messages we don't handle ourselves.
     explorer_tray: HWND,
     icons: Vec<TrayIcon>,
+    /// Remaining startup `TaskbarCreated` re-broadcasts.
+    announcements_left: u32,
 }
+
+/// Startup re-broadcast schedule: catch apps that raced our tray window.
+const TIMER_ANNOUNCE: usize = 1;
+const ANNOUNCE_INTERVAL_MS: u32 = 3000;
+const ANNOUNCE_REPEATS: u32 = 5;
 
 thread_local! {
     static TRAY: RefCell<Option<TrayState>> = const { RefCell::new(None) };
@@ -150,16 +160,26 @@ pub fn create(taskbar: HWND) -> Result<()> {
                 taskbar,
                 explorer_tray,
                 icons: Vec::new(),
+                announcements_left: ANNOUNCE_REPEATS,
             })
         });
 
         raise();
 
         // Ask every running app to re-register its tray icon. They will
-        // re-resolve Shell_TrayWnd and find us first (we are topmost).
+        // re-resolve Shell_TrayWnd and find us first (we are topmost). The
+        // timer repeats the broadcast for apps still starting up (re-adds
+        // are idempotent: an existing owner/uid pair is updated in place).
+        broadcast_taskbar_created();
+        SetTimer(hwnd, TIMER_ANNOUNCE, ANNOUNCE_INTERVAL_MS, None);
+        Ok(())
+    }
+}
+
+fn broadcast_taskbar_created() {
+    unsafe {
         let taskbar_created = RegisterWindowMessageW(w!("TaskbarCreated"));
         let _ = SendNotifyMessageW(HWND_BROADCAST, taskbar_created, WPARAM(0), LPARAM(0));
-        Ok(())
     }
 }
 
@@ -370,6 +390,18 @@ unsafe extern "system" fn passthrough_wndproc(
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if msg == WM_TIMER && wparam.0 == TIMER_ANNOUNCE {
+        let done = TRAY.with_borrow_mut(|t| {
+            let Some(t) = t.as_mut() else { return true };
+            t.announcements_left = t.announcements_left.saturating_sub(1);
+            t.announcements_left == 0
+        });
+        if done {
+            let _ = KillTimer(hwnd, TIMER_ANNOUNCE);
+        }
+        broadcast_taskbar_created();
+        return LRESULT(0);
+    }
     if msg == WM_COPYDATA {
         let cds = &*(lparam.0 as *const COPYDATASTRUCT);
         if cds.dwData == 1 {

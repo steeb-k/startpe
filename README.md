@@ -59,7 +59,8 @@ Two start menus ship; both float above the taskbar and follow its alignment.
 
 ### System tray
 - StartPE hosts `Shell_NotifyIcon` registrations itself (its own `Shell_TrayWnd`,
-  `TaskbarCreated` broadcast on startup), draws the icons next to the clock, and
+  `TaskbarCreated` broadcast on startup, repeated a few times over the first
+  seconds to catch apps launched alongside it), draws the icons next to the clock, and
   forwards left/right clicks to the owning apps. Appbar traffic is proxied to
   Explorer's tray, and NIM traffic mirrored, so Explorer stays consistent.
 
