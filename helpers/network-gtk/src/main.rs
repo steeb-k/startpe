@@ -43,7 +43,12 @@ use windows::Win32::System::Threading::CreateMutexW;
 const APP_ID: &str = "org.winrx.PeNetwork";
 const FLYOUT_TITLE: &str = "StartPE Network";
 /// How long the connect poll waits before declaring failure.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Minimum gap between (re)issued connect attempts before an idle interface is
+/// retried — long enough that a genuine association/handshake is left alone.
+const RETRY_AFTER: Duration = Duration::from_secs(4);
+/// Total connect attempts (the initial one plus auto-retries) before giving up.
+const MAX_CONNECT_ATTEMPTS: u32 = 6;
 
 const CSS: &str = "
 .net-list { background: transparent; }
@@ -307,7 +312,11 @@ fn start_connect(ui: &Ui, net: &wlan::Network, key: Option<&str>) {
 
     let ui2 = ui.clone();
     let ssid = net.ssid.clone();
+    let secured = net.secured;
     let started = Instant::now();
+    // The initial WlanConnect above counts as the first attempt.
+    let mut last_attempt = Instant::now();
+    let mut attempts: u32 = 1;
     glib::timeout_add_local(Duration::from_millis(500), move || {
         let Some(state) = ui2.connect.borrow().as_ref().cloned() else {
             return glib::ControlFlow::Break;
@@ -333,14 +342,39 @@ fn start_connect(ui: &Ui, net: &wlan::Network, key: Option<&str>) {
             return glib::ControlFlow::Break;
         }
         if started.elapsed() > CONNECT_TIMEOUT {
+            // For a secured network a timeout almost always means a wrong key
+            // (WLAN doesn't hand us a clean auth-failure reason on this path).
+            // This is a recovery environment, so just assume that: drop back to
+            // the password entry, pre-focused, so the user can re-enter it.
+            let text = if secured {
+                "Couldn't connect — check the key and try again".to_string()
+            } else {
+                "Can't connect to this network".to_string()
+            };
             *ui2.connect.borrow_mut() = Some(ConnectState {
                 ssid: ssid.clone(),
-                text: "Can't connect to this network".into(),
+                text,
                 done: true,
                 ok: false,
             });
+            if secured {
+                *ui2.expanded.borrow_mut() = Some(ssid.clone());
+            }
             refresh_list(&ui2);
             return glib::ControlFlow::Break;
+        }
+        // Auto-retry: the first association to a never-seen AP often fails, then
+        // the interface falls idle. Re-issue the connect (with a fresh scan) —
+        // the same thing a manual retry does, which is what actually connects.
+        if attempts < MAX_CONNECT_ATTEMPTS && last_attempt.elapsed() > RETRY_AFTER {
+            if let Some(w) = ui2.wlan.borrow().as_ref() {
+                if w.is_idle() {
+                    w.scan();
+                    let _ = w.connect_profile(&ssid);
+                    attempts += 1;
+                    last_attempt = Instant::now();
+                }
+            }
         }
         if ui2.shown.get() {
             refresh_list(&ui2);

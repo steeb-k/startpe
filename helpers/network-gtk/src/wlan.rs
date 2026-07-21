@@ -20,8 +20,10 @@ use windows::Win32::NetworkManagement::WiFi::{
     WLAN_PROFILE_INFO_LIST,
 };
 use windows::Win32::NetworkManagement::WiFi::{
-    wlan_intf_opcode_current_connection, DOT11_AUTH_ALGORITHM, DOT11_AUTH_ALGO_80211_OPEN,
-    DOT11_AUTH_ALGO_RSNA_PSK, DOT11_AUTH_ALGO_WPA_PSK, DOT11_AUTH_ALGO_WPA3_SAE,
+    wlan_interface_state_disconnected, wlan_interface_state_not_ready,
+    wlan_intf_opcode_current_connection, wlan_intf_opcode_interface_state, DOT11_AUTH_ALGORITHM,
+    DOT11_AUTH_ALGO_80211_OPEN, DOT11_AUTH_ALGO_RSNA_PSK, DOT11_AUTH_ALGO_WPA_PSK,
+    DOT11_AUTH_ALGO_WPA3_SAE, WLAN_INTERFACE_STATE,
 };
 
 const ERROR_SUCCESS: u32 = 0;
@@ -204,7 +206,18 @@ impl Wlan {
                     return Err(format!("Couldn't save the network profile ({err}/{reason})"));
                 }
             }
-            let name_w = wide(&net.ssid);
+            self.connect_profile(&net.ssid)
+        }
+    }
+
+    /// Start (or re-issue) a connection to an already-saved profile by SSID —
+    /// no profile write. Used both by [`Wlan::connect`] after saving, and by the
+    /// caller's poll to auto-retry: the first association to a never-seen AP
+    /// frequently fails on stale scan data, and re-issuing (a manual retry, done
+    /// automatically) is what actually gets it to associate.
+    pub fn connect_profile(&self, ssid: &str) -> Result<(), String> {
+        unsafe {
+            let name_w = wide(ssid);
             let params = WLAN_CONNECTION_PARAMETERS {
                 wlanConnectionMode: wlan_connection_mode_profile,
                 strProfile: PCWSTR(name_w.as_ptr()),
@@ -218,6 +231,34 @@ impl Wlan {
                 return Err(format!("Couldn't start the connection ({err})"));
             }
             Ok(())
+        }
+    }
+
+    /// True when the interface has settled into a non-connecting state
+    /// (disconnected / not-ready) — i.e. a connect attempt has finished
+    /// failing, as opposed to still associating/authenticating. The poll uses
+    /// this to decide when a retry is warranted without interrupting an
+    /// in-progress handshake.
+    pub fn is_idle(&self) -> bool {
+        unsafe {
+            let mut size = 0u32;
+            let mut data: *mut core::ffi::c_void = std::ptr::null_mut();
+            if WlanQueryInterface(
+                self.handle,
+                &self.iface,
+                wlan_intf_opcode_interface_state,
+                None,
+                &mut size,
+                &mut data,
+                None,
+            ) != ERROR_SUCCESS
+                || data.is_null()
+            {
+                return false;
+            }
+            let state = *(data as *const WLAN_INTERFACE_STATE);
+            WlanFreeMemory(data);
+            state == wlan_interface_state_disconnected || state == wlan_interface_state_not_ready
         }
     }
 

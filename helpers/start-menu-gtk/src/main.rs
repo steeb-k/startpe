@@ -99,7 +99,9 @@ fn build_ui(app: &adw::Application) {
     // from the right, pinned back in from the left.
     let make_list = || {
         let list = ListBox::new();
-        list.set_selection_mode(SelectionMode::None);
+        // Single (not None) so the top search result can be highlighted and
+        // Enter launches it; keyboard nav then moves the highlight.
+        list.set_selection_mode(SelectionMode::Single);
         list.add_css_class("sm-list");
         list.set_margin_start(6);
         list.set_margin_end(6);
@@ -160,6 +162,14 @@ fn build_ui(app: &adw::Application) {
                 acts.push(action);
             }
             *actions.borrow_mut() = acts;
+            // With an active search, highlight the top result so Enter launches
+            // the best match and arrow keys start from the top; otherwise leave
+            // nothing selected (the pinned/folder views open unhighlighted).
+            if browse && !query.trim().is_empty() {
+                list.select_row(list.row_at_index(0).as_ref());
+            } else {
+                list.unselect_all();
+            }
             all_apps.set_child(Some(&toggle_face(showing_all.get())));
 
             let target = if browse { "browse" } else { "pinned" };
@@ -233,45 +243,133 @@ fn build_ui(app: &adw::Application) {
     panes.append(&right);
     window.set_content(Some(&panes));
 
+    // Carry out a row's action (folder drill-down, Back, launch). Shared by row
+    // activation (click / Enter on a focused row) and Enter in the search box.
+    let run_action: Rc<dyn Fn(RowAction)> = {
+        let (stack, search, refresh, hide) = (
+            stack.clone(),
+            search.clone(),
+            refresh.clone(),
+            hide.clone(),
+        );
+        Rc::new(move |action| match action {
+            RowAction::Back => {
+                stack.borrow_mut().pop();
+                refresh();
+            }
+            RowAction::Folder(p) => {
+                search.set_text("");
+                stack.borrow_mut().push(p);
+                refresh();
+            }
+            RowAction::Launch(p) => {
+                appsource::launch_path(&p);
+                hide();
+            }
+        })
+    };
+
+    // Which list page is live, and its parallel action list — mirrors the
+    // `browse` predicate in `refresh`.
+    let current_list: Rc<dyn Fn() -> (ListBox, Rc<RefCell<Vec<RowAction>>>)> = {
+        let (showing_all, stack, search, pinned_list, browse_list, actions_pinned, actions_browse) = (
+            showing_all.clone(),
+            stack.clone(),
+            search.clone(),
+            pinned_list.clone(),
+            browse_list.clone(),
+            actions_pinned.clone(),
+            actions_browse.clone(),
+        );
+        Rc::new(move || {
+            let browse = showing_all.get()
+                || !search.text().trim().is_empty()
+                || !stack.borrow().is_empty()
+                || !has_pins;
+            if browse {
+                (browse_list.clone(), actions_browse.clone())
+            } else {
+                (pinned_list.clone(), actions_pinned.clone())
+            }
+        })
+    };
+
     // Row activation (same handling on both pages, each with its own actions).
     for (list, actions) in [
         (&pinned_list, &actions_pinned),
         (&browse_list, &actions_browse),
     ] {
-        let (stack, actions, search, refresh, hide) = (
-            stack.clone(),
-            actions.clone(),
-            search.clone(),
-            refresh.clone(),
-            hide.clone(),
-        );
+        let (actions, run_action) = (actions.clone(), run_action.clone());
         list.connect_row_activated(move |_, row| {
             let idx = row.index();
             if idx < 0 {
                 return;
             }
+            // Bind first so the borrow is released before run_action (which can
+            // call refresh → actions.borrow_mut()).
             let action = actions.borrow().get(idx as usize).cloned();
-            match action {
-                Some(RowAction::Back) => {
-                    stack.borrow_mut().pop();
-                    refresh();
-                }
-                Some(RowAction::Folder(p)) => {
-                    search.set_text("");
-                    stack.borrow_mut().push(p);
-                    refresh();
-                }
-                Some(RowAction::Launch(p)) => {
-                    appsource::launch_path(&p);
-                    hide();
-                }
-                None => {}
+            if let Some(action) = action {
+                run_action(action);
             }
         });
     }
     {
         let refresh = refresh.clone();
         search.connect_search_changed(move |_| refresh());
+    }
+    // Enter in the search box launches the highlighted (top) result.
+    {
+        let (current_list, run_action) = (current_list.clone(), run_action.clone());
+        search.connect_activate(move |_| {
+            let (list, actions) = current_list();
+            if let Some(row) = list.selected_row() {
+                let idx = row.index();
+                if idx >= 0 {
+                    let action = actions.borrow().get(idx as usize).cloned();
+                    if let Some(action) = action {
+                        run_action(action);
+                    }
+                }
+            }
+        });
+    }
+    // Down/Up from the search box move focus into the list and step the
+    // highlight (native ListBox nav takes over once a row has focus).
+    {
+        let current_list = current_list.clone();
+        let nav = EventControllerKey::new();
+        nav.set_propagation_phase(gtk::PropagationPhase::Capture);
+        nav.connect_key_pressed(move |_, keyval, _, _| {
+            let down = keyval == gtk::gdk::Key::Down;
+            let up = keyval == gtk::gdk::Key::Up;
+            if !down && !up {
+                return glib::Propagation::Proceed;
+            }
+            let (list, _) = current_list();
+            let cur = list.selected_row().map(|r| r.index()).unwrap_or(-1);
+            let target = if down { cur + 1 } else { cur - 1 };
+            // Up from the top (or nothing selected): stay in the search box.
+            if up && target < 0 {
+                return glib::Propagation::Proceed;
+            }
+            match list.row_at_index(target) {
+                Some(row) => {
+                    list.select_row(Some(&row));
+                    row.grab_focus();
+                    glib::Propagation::Stop
+                }
+                // Empty list: let default focus handling run. At the bottom
+                // already: swallow the key so focus doesn't jump away.
+                None => {
+                    if cur < 0 {
+                        glib::Propagation::Proceed
+                    } else {
+                        glib::Propagation::Stop
+                    }
+                }
+            }
+        });
+        search.add_controller(nav);
     }
 
     // Esc hides; so does losing focus (click-away), but not in the moment right
