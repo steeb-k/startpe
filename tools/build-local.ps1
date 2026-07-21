@@ -21,10 +21,19 @@
 # picks up the local binaries directly. Use CI/releases again by simply
 # tagging as before (this script changes nothing about CI).
 #
+# Run with PowerShell 7+ (pwsh), NOT Windows PowerShell 5.1: the drive-letter
+# path conversion below (`-replace` with a script-block replacement) is a 7+
+# feature. Under 5.1 the block is treated as a literal, the ucrt64 build gets a
+# garbage `cd` path, and it fails mid-run. The `#Requires` guard below stops
+# 5.1 up front instead. Invoke as `pwsh -File tools\build-local.ps1` (or just
+# `tools\build-local.ps1` from a pwsh prompt).
+#
 # Usage (from anywhere):
-#   tools\build-local.ps1                 # build + stage into dist\
-#   tools\build-local.ps1 -Deploy        # ...and copy into the winrx cache
-#   tools\build-local.ps1 -SkipHelpers   # MSVC binaries only
+#   pwsh -File tools\build-local.ps1              # build + stage into dist\
+#   pwsh -File tools\build-local.ps1 -Deploy      # ...and copy into the winrx cache
+#   pwsh -File tools\build-local.ps1 -SkipHelpers # MSVC binaries only
+
+#Requires -Version 7.0
 
 param(
     [switch]$Deploy,

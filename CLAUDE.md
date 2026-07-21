@@ -143,8 +143,17 @@ Gotchas when adding/maintaining a helper:
      PEBakery script prefers over downloading — so a PE rebuild uses the local
      binaries with no tag/release round-trip. MSYS2 helper artifacts live in
      `target/ucrt64/` per helper so they never mix with the MSVC target dir.
+     **Run it with PowerShell 7+ (`pwsh -File tools\build-local.ps1`), never
+     Windows PowerShell 5.1** — the drive-letter path conversion uses a
+     script-block `-replace` (a 7+ feature) that 5.1 treats as a literal,
+     producing a garbage `cd` path that fails the ucrt64 step mid-build. The
+     script has a `#Requires -Version 7.0` guard that now stops 5.1 up front
+     instead of failing halfway.
   GitHub **release assets still come from CI** (tag push) — use that for
-  anything users download; the local pipeline is for iteration speed.
+  anything users download; the local pipeline is for iteration speed. (You can
+  also publish a local build directly: build with `build-local.ps1`, then
+  `gh release create vX.Y.Z --target master dist\*` on a `[skip ci]` commit so
+  the tag push doesn't also trigger a CI build.)
 - **GTK windows and StartPE's own taskbar/Alt+Tab.** All GTK4 toplevels share
   one window class, and GDK caches ex-style bits — a `WS_EX_TOOLWINDOW` set from
   the helper can race the taskbar's enumeration or be rewritten by GDK. A helper
