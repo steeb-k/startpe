@@ -30,6 +30,14 @@ jobs:
       - name: Build
         run: cargo build --release --workspace --target ${{ matrix.target }}
 
+      # This workspace has no tests yet, so today this only proves the test
+      # targets still compile. It is here so that the first test someone writes
+      # is executed by CI automatically, rather than sitting unrun until
+      # somebody remembers to add a workflow step. --locked additionally makes
+      # a stale Cargo.lock a CI failure instead of a silent re-resolve.
+      - name: Test
+        run: cargo test --release --workspace --locked --target ${{ matrix.target }}
+
       # Release assets keep the names the PEBakery script expects
       # (startpe.exe, startpe_loader.dll, syslaunch.exe).
       - name: Stage assets
