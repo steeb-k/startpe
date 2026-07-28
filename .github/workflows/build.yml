@@ -30,14 +30,6 @@ jobs:
       - name: Build
         run: cargo build --release --workspace --target ${{ matrix.target }}
 
-      # This workspace has no tests yet, so today this only proves the test
-      # targets still compile. It is here so that the first test someone writes
-      # is executed by CI automatically, rather than sitting unrun until
-      # somebody remembers to add a workflow step. --locked additionally makes
-      # a stale Cargo.lock a CI failure instead of a silent re-resolve.
-      - name: Test
-        run: cargo test --release --workspace --locked --target ${{ matrix.target }}
-
       # Release assets keep the names the PEBakery script expects
       # (startpe.exe, startpe_loader.dll, syslaunch.exe).
       - name: Stage assets
@@ -65,6 +57,32 @@ jobs:
             ${{ matrix.dll_asset }}
             ${{ matrix.syslaunch_asset }}
           generate_release_notes: true
+
+  # Deliberately its OWN job rather than a step in `build`: that job also
+  # attaches release assets on a tag push, and a test-target compile failure
+  # must never be able to block a release.
+  #
+  # This workspace has no unit tests (verification is manual — see CLAUDE.md),
+  # so today this only proves the test targets still compile and that
+  # Cargo.lock is not stale. It is here so the first test someone writes is
+  # executed by CI automatically, rather than sitting unrun until somebody
+  # remembers to wire up a workflow step.
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      # Pinned by commit SHA rather than tag, matching cargo-deny.yml: a tag
+      # can be moved to point at different code.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Debug profile: this job shares nothing with `build`, so there is no
+      # release-profile artifact to reuse and debug compiles faster.
+      #
+      # The GTK4 helpers are `exclude`d from this workspace and build under the
+      # MSYS2 ucrt64 toolchain, so --workspace does not reach them; they have
+      # no tests either.
+      - name: Test
+        run: cargo test --workspace --locked
 
   # GTK4/Libadwaita shell helpers (SystemInfo.exe, RunBox.exe). Built with the
   # MSYS2 ucrt64 toolchain + the GTK runtime, separate from the MSVC workspace
