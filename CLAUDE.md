@@ -182,8 +182,11 @@ Gotchas when adding/maintaining a helper:
   `reload_config()`. See `helpers/settings-gtk/src/settings_io.rs` and the
   `reload_msg` handler in `taskbar.rs`.
 
-Builds must stay warning-free. There are no unit tests; verification is
-manual. **Warning when testing on a real desktop:** `startpe.exe` hides the
+Builds must stay warning-free. There are still no unit tests; verification is
+manual. CI does run `cargo test --workspace --locked`, so today that only
+proves the test targets compile and `Cargo.lock` is not stale — but the first
+test anyone writes gets executed automatically, with no workflow edit needed.
+**Warning when testing on a real desktop:** `startpe.exe` hides the
 actual Explorer taskbar and grabs the Win key while running. It restores both
 on clean exit, but a force-kill skips that (recover by restarting
 explorer.exe). Prefer a Windows 11 VM or a PE VM. Behavior differs between
@@ -198,6 +201,19 @@ creates a GitHub release with assets `startpe.exe`, `startpe_loader.dll`,
 `pebakery/StartPE.script` downloads from `releases/latest/download/`, so never
 rename them. Bump the version in `Cargo.toml` and the script's `[Main]`
 section when tagging.
+
+`build.yml` has three jobs: **`build`** (the MSVC workspace + release assets),
+**`helpers-gtk`** (the five MSYS2/ucrt64 GTK helpers, `max-parallel: 1`), and
+**`test`**. Keep `test` a *separate* job — it deliberately does not live inside
+`build`, because `build` is what attaches release assets on a tag and a
+test-target compile failure must never be able to block a release.
+
+`.github/workflows/cargo-deny.yml` runs supply-chain checks (advisories,
+licenses, sources). One root `deny.toml` covers the whole repo: cargo-deny finds
+a root config even for a `--manifest-path` in a subdirectory, which is why the
+six helper workspaces need no config of their own. This repo is the only one of
+its group with an empty `ignore` list — it has no suppressed advisories, so keep
+it that way.
 
 ## PE integration context
 
