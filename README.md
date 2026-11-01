@@ -1,3 +1,9 @@
+# Notice
+This repo is archived. I have no intention of continuing development, but it is
+one of the very few truly free start menus that works in a PE environment running
+Windows 25H2, so I'm not going to kill off the repo in case someone wants to keep
+it going. 
+
 # StartPE
 
 A free, open-source (GPLv3) **taskbar, start menu, and desktop for Windows PE**.
